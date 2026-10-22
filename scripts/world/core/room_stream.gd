@@ -29,7 +29,6 @@ var previous_room_key := ""
 var requested_room_key := ""
 var visible_neighbor_keys: Dictionary = {}
 var body_radius := 0.12
-var portal_blockers: Dictionary = {}
 var props: Dictionary = {}
 var props_loaded := false
 var native_context: Dictionary = {}
@@ -334,7 +333,7 @@ func _ensure_room_loaded(stage: String, area: int) -> bool:
 			for body: StaticBody3D in mesh_node.find_children("*", "StaticBody3D", true, false): body.collision_layer = 0
 		if Time.get_ticks_usec() - slice_start > 4000: await get_tree().process_frame; slice_start = Time.get_ticks_usec()
 	await get_tree().process_frame
-	if stage_manifest is Dictionary: preload("res://scripts/world/core/native_floor.gd").apply(room, stage_manifest.get("native_floor_collision", {}), area, native_context)
+	if stage_manifest is Dictionary: preload("res://scripts/world/core/native_floor.gd").apply(room, stage_manifest.get("native_floor_collision", {}), area, native_context, stage)
 	if key != active_room_key:
 		for body: StaticBody3D in room.find_children("NativePlacementFloor_*", "StaticBody3D", true, false): body.collision_layer = 0
 	await get_tree().process_frame
@@ -1000,25 +999,7 @@ func _add_collision(mesh_node: MeshInstance3D, mesh: Mesh, layers: Array[int] = 
 		var body := StaticBody3D.new(); body.name = "RoomCollision_%d" % layer; body.collision_layer = layer; body.collision_mask = 0; var shape := CollisionShape3D.new(); shape.shape = geometry.duplicate() if layer == 4 else geometry
 		if layer == 4 and shape.shape is ConcavePolygonShape3D: (shape.shape as ConcavePolygonShape3D).backface_collision = true
 		body.add_child(shape); mesh_node.add_child(body)
-## A closed door must stop the player. The original blocks a closed doorway with its door actor; the map itself has no static collision there, and `native_floor.filter_shape` keeps only faces inside the original's collision boxes, so the panel's faces (on the doorway plane) are dropped from the player shape and a closed door let him walk into the unloaded neighbour. Each portal therefore gets a thin blocker one body radius beyond the doorway plane on the outer side of the active room (the plane itself stays reachable for the contact tests); it is off while the portal is open. Only portals that touch the active room are solid (a layout can hold overlapping portals of other stages).
-func _sync_portal_blockers() -> void:
-	for portal: Dictionary in portal_layout:
-		var key := _portal_key(portal); var body: StaticBody3D = portal_blockers.get(key)
-		var axis_x := str(portal["normal_axis"]) == "x"
-		var touches_active := _room_key(str(portal["source"]["stage"]), int(portal["source"]["area"])) == active_room_key or _room_key(str(portal["destination"]["stage"]), int(portal["destination"]["area"])) == active_room_key
-		if not touches_active:
-			if is_instance_valid(body): body.collision_layer = 0
-			continue
-		var source_side := _room_key(str(portal["source"]["stage"]), int(portal["source"]["area"])) == active_room_key or _room_key(str(portal["destination"]["stage"]), int(portal["destination"]["area"])) != active_room_key
-		if not is_instance_valid(body):
-			body = StaticBody3D.new(); body.name = "PortalBlocker_" + key.replace(":", "_"); body.collision_mask = 0
-			var shape := CollisionShape3D.new(); var box := BoxShape3D.new(); var width := maxf(float(portal["shared_panel_size"][0]), 1.0) + 0.5
-			box.size = Vector3(0.1, 3.0, width) if axis_x else Vector3(width, 3.0, 0.1); shape.shape = box; body.add_child(shape); add_child(body); portal_blockers[key] = body
-		var center: Array = portal["world_center"]; var push := _outward_sign(portal, source_side) * (body_radius + 0.05)
-		body.global_position = Vector3(float(center[0]) + (push if axis_x else 0.0), float(center[1]) + 1.0, float(center[2]) + (0.0 if axis_x else push))
-		body.collision_layer = 0 if opened_portals.has(key) else 1
 func _refresh_room_state() -> void:
-	_sync_portal_blockers()
 	var visible := {}
 	visible_neighbor_keys.clear()
 	if not active_room_key.is_empty(): visible[active_room_key] = true

@@ -102,7 +102,7 @@ func _enter_tree() -> void:
 		set_physics_process(false)
 		return
 	$Player.combat_allowed = manifest_path.get_base_dir().get_file() not in ["ST04", "ST05", "ST06", "ST07"]
-	$Player.special_mode = _special_mode(manifest_path.get_base_dir().get_file())
+	$Player.special_mode = _special_mode(manifest_path.get_base_dir().get_file(), 0)
 	var source: Variant = JSON.parse_string(FileAccess.get_file_as_string(manifest_path))
 	var weapon_policy: Variant = source.get("native_combat_policy", null) if source is Dictionary else null
 	$Player.buster_allowed = bool(weapon_policy.get("buster_allowed", true)) if weapon_policy is Dictionary else true
@@ -348,7 +348,7 @@ func _prepare_area(transition: bool = false) -> bool:
 		camera_shape.shape = camera_mesh
 		camera_body.add_child(camera_shape)
 		mesh_node.add_child(camera_body)
-	preload("res://scripts/world/core/native_floor.gd").apply(level, native_floor_collision, int(areas[area_picker.selected]["index"]), native_context)
+	preload("res://scripts/world/core/native_floor.gd").apply(level, native_floor_collision, int(areas[area_picker.selected]["index"]), native_context, manifest_path.get_base_dir().get_file())
 	preload("res://scripts/world/core/area_roof.gd").apply(level, manifest_path.get_base_dir().get_file(), int(areas[area_picker.selected]["index"]))
 	var native_props: Array[Node3D] = await preload("res://scripts/world/actors/native_props.gd").load_into(level, manifest_path.get_base_dir().get_file(), int(areas[area_picker.selected]["index"]), native_context)
 	for prop: Node3D in native_props:
@@ -439,10 +439,11 @@ func set_minimap_visible(value: bool) -> void:
 func _update_native_player_pose() -> void:
 	var point := _room_local_position()
 	native_context["native_player_pose_raw"] = [roundi(-point.x * 256.0), roundi(-point.y * 256.0), roundi(point.z * 256.0), roundi(-player.player_model.rotation.y * 4096.0 / TAU) & 4095]
-func _special_mode(stage: String) -> int:
+func _special_mode(stage: String, area: int) -> int:
 	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string("res://assets/player/special_modes.json")) if FileAccess.file_exists("res://assets/player/special_modes.json") else null
 	var entry: Dictionary = parsed.get("stages", {}).get(stage, {}) if parsed is Dictionary else {}
-	# Stages whose area handler picks the mode at runtime (several candidates) default to 1 (unverified).
+	# The area handler's `area ? 1 : 0` (ST4A, GAME 0x800CF4A8 argument) follows the area; other multi-candidate stages default to 1 (unverified).
+	if entry.has("area_modes"): return int(entry["area_modes"]["0" if area == 0 else "other"])
 	return int(entry["mode"]) if entry.get("mode") != null else 1
 func _special_gauge(charge: int, capacity: int, segment: int, power: int, power_max: int, weapon: int) -> void:
 	var active: bool = player.active_special() == weapon
@@ -468,6 +469,7 @@ func set_scene_presentation(active: bool) -> void:
 	if not areas.is_empty(): _apply_fog(int(areas[area_picker.selected]["index"]))
 func _set_current_area(area: int) -> void:
 	_commit_story_state()
+	player.special_mode = _special_mode(manifest_path.get_base_dir().get_file(), area)
 	_update_native_player_pose()
 	_apply_fog(area)
 	game_hud.set_area(area)
@@ -1098,37 +1100,10 @@ func _run_data_menu(npc: Node3D, stage: String, bank: String, message_call: Stri
 	return false
 func _present_data_text(stage: String, text: String) -> void:
 	await dialogue_box.present_message(stage, {"index": -1, "text": text})
-var route_blockers: Dictionary = {}
-var route_blocker_key := ""
-## A closed or locked door that has no streamed portal (a fade route, or a door in an unstreamed stage) still stops the player: the map has no collision on the doorway plane (`native_floor.filter_shape` drops the panel faces) and the original blocks it with the door actor. The active area gets a thin blocker one body radius beyond each such door panel, on the side the door leads to, so the plane stays reachable for the contact tests. Streamed portals have their own in `room_stream`; ladders, lifts, warps and elevators have no panel and get none.
-func _sync_route_blockers(area: int) -> void:
-	var stage := manifest_path.get_base_dir().get_file(); var key := "%s:%d" % [stage, area]
-	if key == route_blocker_key: return
-	route_blocker_key = key
-	for body: StaticBody3D in route_blockers.values(): if is_instance_valid(body): body.queue_free()
-	route_blockers.clear()
-	var native_transition := preload("res://scripts/world/core/native_transition.gd")
-	for route: Dictionary in routes:
-		if int(route["source_area"]) != area or native_transition.is_ladder(route) or native_transition.is_warp(route) or native_transition.is_elevator(route): continue
-		var panel: Variant = route.get("source_panel", null)
-		if not panel is Dictionary: panel = route.get("native_door", {}).get("source_panel", null)
-		if not panel is Dictionary or not panel.has("bounds") or not panel.has("center"): continue
-		if streaming_rooms and not room_stream.portal_for_route(stage, area, route).is_empty(): continue
-		var axis := int(panel["axis"]); var lateral := 2 if axis == 0 else 0
-		var th := -float(route["source_transform_raw"][3]) * TAU / 4096.0; var forward := Vector3(-sin(th), 0.0, -cos(th))
-		var center: Array = panel["center"]; var low: Array = panel["bounds"]["min"]; var high: Array = panel["bounds"]["max"]
-		var width := maxf(float(high[lateral]) - float(low[lateral]), 1.0) + 0.5
-		var offset: Vector3 = room_stream.offset_for(stage, area) if streaming_rooms else Vector3.ZERO
-		var body := StaticBody3D.new(); body.name = "RouteBlocker_%d" % route_blockers.size(); body.collision_mask = 0; body.collision_layer = 1
-		var shape := CollisionShape3D.new(); var box := BoxShape3D.new(); box.size = Vector3(0.1, 3.0, width) if axis == 0 else Vector3(width, 3.0, 0.1); shape.shape = box; body.add_child(shape); add_child(body)
-		var push := signf(forward[axis]) * (($Player/Collision.shape as CapsuleShape3D).radius + 0.05)
-		body.global_position = Vector3(float(center[0]), float(center[1]) + 1.0, float(center[2])) + offset + (Vector3(push, 0.0, 0.0) if axis == 0 else Vector3(0.0, 0.0, push))
-		route_blockers[route_blockers.size()] = body
 func _update_nearest_door() -> void:
 	nearest_door = {}
 	if loading or areas.is_empty(): return
 	var index := int(areas[area_picker.selected]["index"])
-	_sync_route_blockers(index)
 	var distance := INF
 	for route: Dictionary in routes:
 		if int(route["source_area"]) != index: continue

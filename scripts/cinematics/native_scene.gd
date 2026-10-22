@@ -74,6 +74,25 @@ var registration_records: Array[String] = []
 var player_pose: Node3D
 var saved_position: Array = []
 var saved_facing := 0
+const Playback := preload("res://scripts/cinematics/scene_playback.gd")
+## A keyframe every KEYFRAME_TICKS quiet ticks, the last 30 s.
+const KEYFRAME_TICKS := 2
+const KEYFRAMES := 375
+## The script variables a keyframe keeps (the actors, the player, the camera and the shared context are saved beside them).
+const STATE := ["segment", "segment_tick", "phase_tick", "total_tick", "command_index", "program_index", "operation_started", "operation_tick", "director_state", "head_target", "head_speed", "head_units", "target_mode", "target_slot", "eye_mode", "focus", "relative_focus", "orbit", "eye", "focus_velocity", "orbit_velocity", "eye_velocity", "answer", "skip_locked", "scene_flags", "sound_latched", "shake", "shake_decay", "roll", "callback_advanced", "xa_ready_tick", "xa_answer", "xa_id", "xa_started", "banner_state"]
+const ACTOR_EXTRA := ["render_offset", "rest_yaw", "hinge_shift", "last_global"]
+## Script variables of scene actors that hold static tables (never copied into a keyframe).
+const STATIC_VARS := ["effect", "profile", "textures", "data", "runtime", "surfaces", "manifest", "records", "trig"]
+var keyframes: Array = []
+var rewind_tick := -1
+var rewind_shown := -1
+var graveyard: Array[Node] = []
+var banner_state: Array = []
+var xa_loading := 0
+var xa_id := -1
+var xa_started := 0
+var xa_db := 0.0
+var xa_tween: Tween
 func configure(gameplay: Node3D, level: Node3D, path: String, requested_area: int = -1) -> bool:
 	host = gameplay; scene_root = level; directory = path.get_base_dir()
 	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
@@ -181,27 +200,31 @@ func run() -> bool:
 		if not audio is Dictionary or int(audio.get("id", -1)) != int(callbacks["xa"]["descriptor_index"]): _restore(); return false
 		if not await AssetStore.ensure_voice(audio): _restore(); return false
 		var stream: AudioStream = await host.audio._load_stream(str(audio["file"]))
-		if stream != null: xa = AudioStreamPlayer.new(); xa.stream = stream; xa.bus = "SFX" if AudioServer.get_bus_index("SFX") >= 0 else "Master"; add_child(xa); xa.play()
+		if stream != null: xa = AudioStreamPlayer.new(); xa.stream = stream; xa.bus = "SFX" if AudioServer.get_bus_index("SFX") >= 0 else "Master"; add_child(xa); xa.play(); xa_id = int(callbacks["xa"]["descriptor_index"]); xa_started = 0
 		while is_instance_valid(xa) and is_inside_tree() and xa.get_playback_position() <= 0.0: await get_tree().process_frame
-	camera.make_current(); running = true; _commands(); _interpolate(); segment_tick = 1; phase_tick = 1; total_tick = 1; _camera_update()
+	camera.make_current(); running = true; Playback.begin(self); _commands(); _interpolate(); segment_tick = 1; phase_tick = 1; total_tick = 1; _camera_update()
 	var success: bool = await completed
 	_restore(); return success
 func _process(delta: float) -> void:
 	if not running or finishing: last_wall = 0; return
 	if skip_requested: _skip_scene()
 	if finishing: return
+	if Playback.speed <= 0: last_wall = 0; return  # paused, or rewinding (the playback controller steps back)
 	# The engine clamps a frame's delta (about 0.13 s), so a slow web frame would advance fewer ticks than real time while the voice plays in real time: follow the wall clock and spend a bounded time per frame catching up.
 	var web := OS.has_feature("web"); var began := Time.get_ticks_usec()
 	if web:
 		delta = clampf(float(began - last_wall) / 1000000.0, 0.0, 5.0) if last_wall > 0 else delta
 		last_wall = began
-	elapsed += delta * float(data.get("native_tick_hz", 25))
-	while elapsed >= 1.0 and running and not finishing:
-		elapsed -= 1.0; native_tick()
+	elapsed += delta * float(data.get("native_tick_hz", 25)) * float(Playback.speed)
+	var steps := 0
+	while elapsed >= 1.0 and running and not finishing and (Playback.speed <= 1 or steps < Playback.MAX_STEPS):
+		elapsed -= 1.0; steps += 1; native_tick()
 		if web and Time.get_ticks_usec() - began > 40000: break
+	if Playback.speed > 1: elapsed = minf(elapsed, 1.0)
 func native_tick() -> void:
 	if message_failed: running = false; completed.emit(false); return
 	if area_loading: return
+	if _quiet() and (keyframes.is_empty() or total_tick - _tick_of(keyframes.back()) >= KEYFRAME_TICKS): _keyframe()
 	var profile: Dictionary = _profile()
 	for sound: Dictionary in profile.get("sounds", []):
 		if int(sound["tick"]) == segment_tick: host.audio.play_at(int(sound["id"]), scene_root.to_global(_world(sound["position_raw"])))
@@ -275,8 +298,8 @@ func _action(action: Dictionary) -> void:
 		"player_control": player_clock.play_control(int(action["control"]), int(action.get("start_record", 0)))
 		"hp_refill": host.player.refill_health()
 		"director_state": director_state = int(action["state"])
-		"result_banner": _mission_banner().show_banner(int(action["args_raw"][0]), int(action["args_raw"][1]), int(action["args_raw"][2]))
-		"result_banner_hide": _mission_banner().hide_banner()
+		"result_banner": banner_state = [int(action["args_raw"][0]), int(action["args_raw"][1]), int(action["args_raw"][2])]; _mission_banner().show_banner(banner_state[0], banner_state[1], banner_state[2])
+		"result_banner_hide": banner_state = []; _mission_banner().hide_banner()
 		"player_special_usable":
 			host.player.special_usable = int(action["value"]) != 0
 		"head_target": head_target = int(action["target"]); head_speed = int(action["speed"])
@@ -302,6 +325,7 @@ func _action(action: Dictionary) -> void:
 		"sound_latch": sound_latched = int(action["value"]) != 0
 		"pool_clear":
 			if (int(action["mask"]) & 0xFFE) != 0:
+				keyframes.clear()
 				for slot: int in actors.keys():
 					if bool(actors[slot]["active"]): _remove(slot)
 				for node: Node in get_tree().get_nodes_in_group("native_pool_actors"): node.queue_free()
@@ -488,7 +512,7 @@ func _constrain_camera(target: Vector3) -> void:
 func _remove(slot: int) -> void:
 	if not actors.has(slot): return
 	var node: Variant = actors[slot]["node"]
-	if is_instance_valid(node) and not bool(actors[slot].get("borrowed", false)): node.queue_free()
+	if is_instance_valid(node) and not bool(actors[slot].get("borrowed", false)): node.hide(); graveyard.append(node)  # kept until the scene ends so that a rewind can bring it back
 	actors.erase(slot)
 func _activate_record(address: String) -> void:
 	var record: Dictionary = records.get(address, {})
@@ -536,6 +560,7 @@ func _finish_scene() -> void:
 		var raw: Array = transition_route["destination_transform_raw"]; transition_route["destination_transform"] = {"position": [float(raw[0]) / 256.0, float(raw[1]) / 256.0, float(raw[2]) / 256.0], "yaw_raw": int(raw[3]), "floor_height": int(raw[1]) == -1}
 	running = false; completed.emit(true)
 func _restore() -> void:
+	Playback.end(self)
 	_restore_shot_visibility()
 	if host.player.motion_tree != null: host.player.motion_tree.active = saved_motion_active
 	if host.player.upper_modifier != null: host.player.upper_modifier.set_source_aim_angles(0, 0)
@@ -551,6 +576,9 @@ func _restore() -> void:
 	for entry: Dictionary in suppressed_streams:
 		if is_instance_valid(entry["node"]): (entry["node"] as MeshInstance3D).set_surface_override_material(int(entry["surface"]), entry["material"])
 	suppressed_streams.clear()
+	for node: Node in graveyard:
+		if is_instance_valid(node): node.queue_free()
+	graveyard.clear()
 func _restore_shot_visibility() -> void:
 	for node: Node3D in shot_suppressed:
 		if is_instance_valid(node): node.show()
@@ -559,7 +587,7 @@ func _release_root() -> void:
 	if owns_root and is_instance_valid(scene_root): scene_root.queue_free()
 	owns_root = false
 func _area_change(operation: Dictionary) -> void:
-	area_loading = true
+	area_loading = true; keyframes.clear()
 	var saved: bool = operation["position_raw"] is String
 	var success: bool = await host.native_scene_area(int(operation["area"]), saved_position if saved else operation["position_raw"], saved_facing if saved else int(operation["facing_raw"]))
 	area = int(operation["area"]); area_loading = false; message_failed = message_failed or not success
@@ -620,16 +648,20 @@ func _prepare_voice_assets() -> bool:
 			if stream != null: xa_streams[id] = stream
 	return true
 func _play_xa(id: int) -> void:
+	xa_loading += 1
+	await _play_xa_stream(id)
+	xa_loading -= 1
+func _play_xa_stream(id: int) -> void:
 	var entry: Dictionary = xa_entries.get(id, {})
 	if entry.is_empty(): message_failed = true; return
 	if not await AssetStore.ensure_voice(entry) or not is_inside_tree(): message_failed = true; return
 	var stream: AudioStream = xa_streams[id] if xa_streams.has(id) else await host.audio._load_stream(str(entry["file"]))
 	if stream == null: return
 	if not is_instance_valid(xa): xa = AudioStreamPlayer.new(); xa.bus = "SFX" if AudioServer.get_bus_index("SFX") >= 0 else "Master"; add_child(xa)
-	xa.stream = stream; xa.volume_db = 0.0; xa.play(); xa_ready_tick = -1; xa_answer = answer if id != int(callbacks.get("xa", {}).get("descriptor_index", -1)) else -1
+	xa.stream = stream; xa.volume_db = 0.0; xa.play(); xa_id = id; xa_started = total_tick; xa_ready_tick = -1; xa_answer = answer if id != int(callbacks.get("xa", {}).get("descriptor_index", -1)) else -1
 func _fade_xa(speed: int) -> void:
 	if not is_instance_valid(xa) or not xa.playing or speed <= 0: return
-	var tween := create_tween(); tween.tween_property(xa, "volume_db", -60.0, 127.0 / float(speed) / float(data.get("native_tick_hz", 25))); tween.tween_callback(xa.stop)
+	xa_tween = create_tween(); xa_tween.tween_property(xa, "volume_db", -60.0, 127.0 / float(speed) / float(data.get("native_tick_hz", 25))); xa_tween.tween_callback(xa.stop)
 func _xa_tick() -> void:
 	if is_instance_valid(xa) and xa.playing and xa_ready_tick < 0 and xa.get_playback_position() > 0.0: xa_ready_tick = total_tick
 func _interpolate() -> void:
@@ -734,3 +766,147 @@ func _apply_face(node: Node3D, channel: String, frame: int) -> void:
 		for surface: Dictionary in actor["face_surfaces"]:
 			if int(surface["stream"]) == stream: (surface["material"] as ShaderMaterial).set_shader_parameter("uv_word", (cell % columns) * width | ((cell / columns) * height) << 8)
 		return
+# Playback (scene_playback.gd): a keyframe before every quiet tick (no message, fade, area load or voice request in flight), the last 30 s; rewinding restores the newest one and the tick script runs on from there, so a replay is the original run again. An area change or a pool clear ends the history (the level itself changed).
+func playback_root() -> Node: return host
+func playback_hz() -> float: return float(data.get("native_tick_hz", 25))
+func playback_ticks() -> int: return total_tick
+func playback_voices() -> Array: return [xa, host.voice]
+func playback_rewindable() -> bool: return running and _quiet()
+func playback_back(count: int) -> int:
+	if keyframes.is_empty(): return 0
+	if rewind_tick < 0 or total_tick != rewind_shown: rewind_tick = total_tick
+	var oldest := _tick_of(keyframes[0])
+	rewind_tick = maxi(rewind_tick - count, oldest)
+	var index := keyframes.size() - 1
+	while index > 0 and _tick_of(keyframes[index]) > rewind_tick: index -= 1
+	var frame: Dictionary = keyframes[index]
+	if _tick_of(frame) != total_tick:
+		keyframes.resize(index + 1)
+		_restore_keyframe(frame)
+	rewind_shown = total_tick
+	return count if rewind_tick > oldest else 0
+func _tick_of(frame: Dictionary) -> int: return int(frame["values"][STATE.find("total_tick")])
+## Restarts the voice of the restored tick where it would be by now.
+func playback_resync() -> void:
+	rewind_tick = -1
+	if xa_id < 0 or not xa_entries.has(xa_id):
+		if is_instance_valid(xa): xa.stop()
+		return
+	var id := xa_id; var entry: Dictionary = xa_entries[id]
+	var stream: AudioStream = xa_streams[id] if xa_streams.has(id) else await host.audio._load_stream(str(entry["file"]))
+	if stream == null or not running or id != xa_id: return
+	var position := float(total_tick - xa_started) / playback_hz()
+	if not is_instance_valid(xa): xa = AudioStreamPlayer.new(); xa.bus = "SFX" if AudioServer.get_bus_index("SFX") >= 0 else "Master"; add_child(xa)
+	if stream.get_length() > 0.0 and position >= stream.get_length(): xa.stop(); return
+	xa.stream = stream; xa.volume_db = xa_db; xa.play(position)
+func _quiet() -> bool:
+	return not (message_busy or fade_busy or area_loading or finishing or message_failed or xa_loading > 0 or bool(host.dialogue_box.get("active")) or not host.transition_overlay.is_idle())
+func _clone(value: Variant, depth := 2) -> Variant:
+	if depth == 0: return value
+	if value is Array:
+		var copy: Array = value.duplicate()
+		for index in copy.size(): copy[index] = _clone(copy[index], depth - 1)
+		return copy
+	if value is Dictionary:
+		var copy: Dictionary = value.duplicate()
+		for key: Variant in copy: copy[key] = _clone(copy[key], depth - 1)
+		return copy
+	return value
+## The script variables of a scene actor (deep copies of its lists and tables, the clocks as keyframes).
+func _vars(node: Object) -> Dictionary:
+	var values := {}; var clocks := {}
+	for property: Dictionary in node.get_property_list():
+		if int(property["usage"]) & PROPERTY_USAGE_SCRIPT_VARIABLE == 0: continue
+		var value: Variant = node.get(property["name"])
+		if value is NativeAnimation: clocks[property["name"]] = value.capture()
+		elif not property["name"] in STATIC_VARS and (not (value is Array or value is Dictionary) or value.size() <= 64): values[property["name"]] = _clone(value)
+	return {"values": values, "clocks": clocks}
+func _put_vars(node: Object, state: Dictionary) -> void:
+	for name: String in state["values"]: node.set(name, _clone(state["values"][name]))
+	for name: String in state["clocks"]:
+		var clock: Variant = node.get(name)
+		if clock is NativeAnimation: clock.restore(state["clocks"][name])
+func _frames(node: Node) -> Array: return [node.get_meta("native_face_eyes", 0), node.get_meta("native_face_mouth", 0)]
+func _keyframe() -> void:
+	var values: Array = []
+	for name: String in STATE: values.append(get(name))
+	var rows := {}
+	for slot: int in actors:
+		var actor: Dictionary = actors[slot]; var node: Variant = actor["node"]
+		if not is_instance_valid(node): continue
+		var row := {"actor": actor, "node": node, "pose": Playback.pose(node), "visible": node.visible, "active": actor["active"], "head_target": actor["head_target"], "head_speed": actor["head_speed"], "head_enabled": actor["head_enabled"], "flag_started": actor["flag_started"], "fields": actor["fields"].duplicate(), "face_tables": actor["face_tables"].duplicate(), "extra": {}, "faces": _frames(node)}
+		for key: String in ACTOR_EXTRA:
+			if actor.has(key): row["extra"][key] = actor[key]
+		if actor["clock"] != null: row["clock"] = actor["clock"].capture()
+		if actor.has("exhaust"): row["exhaust"] = _vars(actor["exhaust"])
+		if node.has_method("native_tick") or bool(actor.get("borrowed", false)): row["vars"] = _vars(node)
+		if node.get("surfaces") is Array:
+			var meshes: Array = []
+			for surface: MeshInstance3D in node.surfaces: meshes.append([surface.mesh, (surface.material_override as ShaderMaterial).get_shader_parameter("page") if surface.material_override is ShaderMaterial else null])
+			row["meshes"] = meshes
+		rows[slot] = row
+	var model: Node3D = host.player.player_model
+	var flags: Dictionary = host.native_context.get("event_flags", {}); var context: Dictionary = host.native_context.duplicate(); context["event_flags"] = flags.duplicate()
+	var stored: Array = []
+	for key: String in faces: stored.append([key, (faces[key] as Dictionary).duplicate()])
+	var backdrop := camera.get_node_or_null("NativeBackdrop")
+	var overlay = host.transition_overlay
+	var frame := {"values": values, "actors": rows, "interpolations": _clone(interpolations), "faces": stored, "shot": shot_suppressed.duplicate(), "context": context,
+		"player": [host.player.global_position, model.rotation, model.visible, player_clock.capture(), _frames(model), host.player.special_usable, Playback.pose(player_pose) if is_instance_valid(player_pose) else []],
+		"camera": [Playback.pose(camera), camera.get_meta("native_depth_cue_mode") if camera.has_meta("native_depth_cue_mode") else null, camera.get_meta("native_sky_gradient") if camera.has_meta("native_sky_gradient") else null],
+		"backdrop": [backdrop.visible, backdrop.offset, backdrop.velocity] if backdrop != null else [], "xa_db": xa.volume_db if is_instance_valid(xa) else 0.0,
+		"covered": overlay.is_covered(), "additive": overlay.effect != null and bool(overlay.effect.get_shader_parameter("additive"))}
+	if not keyframes.is_empty() and _tick_of(keyframes.back()) == total_tick: keyframes.pop_back()
+	keyframes.append(frame)
+	if keyframes.size() > KEYFRAMES: keyframes.pop_front()
+func _restore_keyframe(frame: Dictionary) -> void:
+	var before := banner_state
+	for index in STATE.size(): set(STATE[index], frame["values"][index])
+	xa_db = frame["xa_db"]
+	if xa_tween != null and xa_tween.is_valid(): xa_tween.kill()
+	message_busy = false; fade_busy = false; elapsed = 0.0; last_wall = 0
+	for slot: int in actors.keys():
+		if not frame["actors"].has(slot) and is_instance_valid(actors[slot]["node"]) and not bool(actors[slot].get("borrowed", false)): (actors[slot]["node"] as Node).hide(); graveyard.append(actors[slot]["node"])
+	actors.clear()
+	for slot: int in frame["actors"]:
+		var row: Dictionary = frame["actors"][slot]; var actor: Dictionary = row["actor"]; var node: Node3D = row["node"]
+		if not is_instance_valid(node): continue
+		actor["active"] = row["active"]; actor["head_target"] = row["head_target"]; actor["head_speed"] = row["head_speed"]; actor["head_enabled"] = row["head_enabled"]; actor["flag_started"] = row["flag_started"]
+		actor["fields"].clear(); actor["fields"].merge(row["fields"]); actor["face_tables"] = row["face_tables"].duplicate()
+		for key: String in ACTOR_EXTRA:
+			if row["extra"].has(key): actor[key] = row["extra"][key]
+			else: actor.erase(key)
+		if actor.has("exhaust") and not row.has("exhaust"): actor.erase("exhaust")
+		actors[slot] = actor
+		node.process_mode = Node.PROCESS_MODE_INHERIT; Playback.apply(node, row["pose"]); node.visible = row["visible"]
+		if row.has("clock"): actor["clock"].restore(row["clock"])
+		if row.has("exhaust"): _put_vars(actor["exhaust"], row["exhaust"])
+		if row.has("vars"): _put_vars(node, row["vars"])
+		if row.has("meshes"):
+			for index in mini(row["meshes"].size(), node.surfaces.size()):
+				var surface: MeshInstance3D = node.surfaces[index]; surface.mesh = row["meshes"][index][0]
+				if surface.material_override is ShaderMaterial and row["meshes"][index][1] != null: (surface.material_override as ShaderMaterial).set_shader_parameter("page", row["meshes"][index][1])
+		_set_frames(node, row["faces"])
+	shot_suppressed.assign(frame["shot"]); interpolations = _clone(frame["interpolations"])
+	faces.clear()
+	for entry: Array in frame["faces"]: faces[entry[0]] = (entry[1] as Dictionary).duplicate()
+	host.native_context.clear(); host.native_context.merge(frame["context"])
+	var player: Array = frame["player"]; var model: Node3D = host.player.player_model
+	host.player.global_position = player[0]; model.rotation = player[1]; model.visible = player[2]; player_clock.restore(player[3]); _set_frames(model, player[4]); host.player.special_usable = player[5]
+	if is_instance_valid(player_pose) and not player[6].is_empty(): Playback.apply(player_pose, player[6])
+	if host.player.upper_modifier != null: host.player.upper_modifier.set_source_aim_angles(0, head_units)
+	Playback.apply(camera, frame["camera"][0])
+	for index in 2:
+		var key: String = ["native_depth_cue_mode", "native_sky_gradient"][index]; var value: Variant = frame["camera"][index + 1]
+		if value == null: camera.remove_meta(key)
+		else: camera.set_meta(key, value)
+	var backdrop := camera.get_node_or_null("NativeBackdrop")
+	if backdrop != null and not frame["backdrop"].is_empty(): backdrop.visible = frame["backdrop"][0]; backdrop.offset = frame["backdrop"][1]; backdrop.velocity = frame["backdrop"][2]; backdrop._apply()
+	if banner_state != before:
+		if banner_state.is_empty(): _mission_banner().hide_banner()
+		else: _mission_banner().show_banner(int(banner_state[0]), int(banner_state[1]), int(banner_state[2]))
+	if bool(frame["covered"]): host.transition_overlay.hold(bool(frame["additive"]))
+	elif host.transition_overlay.visible: host.transition_overlay.clear()
+func _set_frames(node: Node, frames: Array) -> void:
+	node.set_meta("native_face_eyes", frames[0]); node.set_meta("native_face_mouth", frames[1])
+	_apply_face(node, "eyes", int(frames[0])); _apply_face(node, "mouth", int(frames[1]))

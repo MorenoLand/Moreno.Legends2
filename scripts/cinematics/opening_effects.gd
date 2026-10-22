@@ -18,8 +18,10 @@ var overlay_opaque: DrawSurface
 var overlay_key := ""
 var overlay_tick := 0
 var texture_cache: Dictionary = {}
+var backdrops: Dictionary = {}
+var backdrop := Color(0, 0, 0, 0)
 func configure(view_camera: Camera3D, manifest: Dictionary) -> bool:
-	camera = view_camera
+	camera = view_camera; backdrops = manifest.get("backdrops", {}).get("areas", {})
 	var path: String = str(manifest.get("effects", "res://assets/opening/effects/manifest.json"))
 	if not FileAccess.file_exists(path): return false
 	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
@@ -36,6 +38,12 @@ func configure(view_camera: Camera3D, manifest: Dictionary) -> bool:
 	overlay_add = DrawSurface.new(); overlay_add.renderer = self; overlay_add.overlay = true; overlay_add.flash = true; overlay_add.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST; overlay_add.material = additive; flash_layer.add_child(overlay_add)
 	overlay_opaque = DrawSurface.new(); overlay_opaque.renderer = self; overlay_opaque.overlay = true; overlay_opaque.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST; flash_layer.add_child(overlay_opaque)
 	return true
+# The area's backdrop bands (GAME 0x800BEFB8, bound by the area initialiser) sit behind everything. A solid table fills the frame in its 5 bit display colour; a gradient table anchors its bands to the camera pitch through a GTE projection and is not drawn.
+func set_area(index: int) -> void:
+	backdrop = Color(0, 0, 0, 0)
+	var colors: Array = backdrops.get(str(index), {}).get("colors", [])
+	if colors.is_empty() or colors.any(func(color: Array) -> bool: return color != colors[0]): return
+	backdrop = Color8(((int(colors[0][0]) >> 3) * 255 + 15) / 31, ((int(colors[0][1]) >> 3) * 255 + 15) / 31, ((int(colors[0][2]) >> 3) * 255 + 15) / 31)
 func set_overlay(key: String, tick: int) -> void:
 	overlay_key = key; overlay_tick = tick; overlay_add.queue_redraw(); overlay_opaque.queue_redraw()
 func set_bank(value: String) -> void:
@@ -66,8 +74,15 @@ func spawn(variant: int, params: Dictionary) -> void:
 func remove(slot: int) -> void:
 	for index: int in range(actors.size() - 1, -1, -1):
 		if int(actors[index]["slot"]) == slot: _remove_actor(index)
+# Object writes of the scene callbacks (ST02T 0x800EF704): the upper halfwords of the position words and the mode byte at +0x0C, which picks the palette and atlas every frame.
+func set_actor(slot: int, position: Variant, fields: Dictionary) -> void:
+	for actor: Dictionary in actors:
+		if int(actor["slot"]) != slot: continue
+		if position is Vector3: actor["source"] = position
+		if fields.has("0x0C"): actor["parameter"] = (int(actor["parameter"]) & ~255) | (int(fields["0x0C"]) & 255)
+		if int(actor["class"]) == 18 and int(actor["variant"]) in [0, 1, 2]: _cloud_materials(actor)
 func _remove_actor(index: int) -> void:
-	for instance: MeshInstance3D in actors[index]["meshes"]: instance.queue_free()
+	for instance: MeshInstance3D in actors[index]["meshes"]: instance.hide()  # kept (hidden) so that a rewind can bring it back
 	actors.remove_at(index)
 func native_tick() -> void:
 	if data.is_empty() or not is_instance_valid(camera): return
@@ -115,7 +130,8 @@ func _draw_cloud_meshes(actor: Dictionary) -> void:
 		var width: int = int(profile["half_size"][ring]); var a: int = (width * int(small[24][1])) >> 12; var b: int = (width * int(small[24][0])) >> 12
 		for item: int in range(8 if variant == 1 else 32):
 			var angle: int = (int(actor["phases"][ring]) + item * 128) % 4096; var reference: int = 3072 - yaw if variant != 2 else 4096 - angle; var distance: int = ((angle - reference + 2048) & 4095) - 2048 if variant != 2 else (((yaw + 1024) - reference + 2048) & 4095) - 2048
-			if abs(distance) >= (1225 if variant != 2 else 674): continue
+			# Variants 0 and 1 keep the camera-facing sector (ST02T 0x800EAFC4 slti 1225); variant 2 drops it on every ring but the first (0x800EBCD4 beq ring, 0x800EBD44 slti 674), which leaves the far side of the bowl.
+			if variant != 2 and abs(distance) >= 1225 or variant == 2 and ring != 0 and abs(distance) < 674: continue
 			var radius: int = int(profile["radius"][ring]) + ((int(profile["radius_jitter"][item]) >> 3) - 32 if variant == 1 else 0)
 			var center := Vector3(_s16(int(source.x) + ((radius * int(trig[angle & 4095][1])) >> 12)), _s16(int(source.y) + int(profile["height"][ring]) + ((int(small[(ring + item * 2) & 63][0]) >> 8) if variant != 2 else 0)), _s16(int(source.z) + ((radius * int(trig[angle & 4095][0])) >> 12)))
 			if _view(center).z < 48.0: continue
@@ -125,6 +141,7 @@ func _draw_cloud_meshes(actor: Dictionary) -> void:
 		if begun: mesh.surface_end()
 		actor["meshes"][ring].mesh = mesh
 func _draw_atmosphere(surface: Node2D) -> void:
+	if backdrop.a > 0.0: surface.draw_rect(Rect2(0, 0, 320, 240), backdrop)
 	for actor: Dictionary in actors:
 		if int(actor["class"]) != 18: continue
 		var variant: int = int(actor["variant"])

@@ -257,7 +257,11 @@ func _page_glyph_count(lines: PackedStringArray) -> int:
 	for index in range(lines.size()): count += lines[index].length() + (1 if index < lines.size() - 1 else 0)
 	return count
 func _wait_native_updates(updates: int) -> void:
-	await get_tree().create_timer(float(updates) / 25.0).timeout
+	# The timed pages of a scene follow its playback (scene_playback.gd): paused with it, faster in fast forward; typing and the pages that wait for a key do not.
+	var left := float(updates) / 25.0
+	while left > 0.0:
+		await get_tree().process_frame
+		left -= get_process_delta_time() * float(maxi(preload("res://scripts/cinematics/scene_playback.gd").speed, 0))
 func _plain_text(text: String) -> String:
 	var plain := ""
 	for character in text:

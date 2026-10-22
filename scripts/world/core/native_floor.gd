@@ -6,6 +6,8 @@ const WALL_KIND := 0x1B
 ## Record boxes that make nothing solid in the mesh: the 0x1C volume and kinds 0x27, 0x37, 0x47, 0x57 (GAME 0x800B4BFC: a tile-sized XZ bound test on the previous position that returns 0x41 inside and 0x43 outside, never a surface).
 const LIMIT_SKIP := [0x1C, 0x27, 0x37, 0x47, 0x57]
 const LIMIT_MARGIN := 0.1
+const DOOR_MARGIN := 0.1
+static var door_panels: Dictionary = {}
 const TRIANGULAR_PRISM := [0x22, 0x32, 0x42, 0x52]
 static func active_boxes(source: Dictionary, area: int, native_context: Dictionary = {}) -> Array:
 	var data: Dictionary = source.get(str(area), {}); var records: Array = data.get("boxes", []).duplicate()
@@ -22,7 +24,8 @@ static func replace_placement(level: Node3D, source: Dictionary, area: int, plac
 		for child in mesh.get_children():
 			if child is StaticBody3D and child.has_meta("native_floor_replaced"): child.collision_layer = 1; child.remove_meta("native_floor_replaced")
 	apply(level, {str(area): {"boxes": active_boxes(source, area, native_context).filter(func(record: Dictionary) -> bool: return int(record["placement"]) == placement)}}, area, native_context)
-static func apply(level: Node3D, source: Dictionary, area: int, native_context: Dictionary = {}) -> int:
+static func apply(level: Node3D, source: Dictionary, area: int, native_context: Dictionary = {}, stage: String = "") -> int:
+	if not stage.is_empty(): level.set_meta("native_door_keep", door_keep(stage, area))
 	var groups := {}; var automatic := {}; var manual := {}; var elevators := {}; var count := 0
 	for terrain: MeshInstance3D in level.find_children("terrain", "MeshInstance3D", true, false):
 		for child in terrain.get_children():
@@ -73,9 +76,11 @@ static func apply(level: Node3D, source: Dictionary, area: int, native_context: 
 			shape.set_meta("native_floor_record", record); body.add_child(shape)
 		if body.get_child_count() > 0:
 			if not unported and not elevators.has(placement):
-				for mesh: MeshInstance3D in meshes:
-					for child in mesh.get_children():
-						if child is StaticBody3D and (child.collision_layer == 1 or child.name == "RoomCollision_1"): child.collision_layer = 0; child.set_meta("native_floor_replaced", true)
+				if _near_door(level, meshes): _limit_mesh_collision(level, placement, [])
+				else:
+					for mesh: MeshInstance3D in meshes:
+						for child in mesh.get_children():
+							if child is StaticBody3D and (child.collision_layer == 1 or child.name == "RoomCollision_1"): child.collision_layer = 0; child.set_meta("native_floor_replaced", true)
 			elif unported and not elevators.has(placement): _limit_mesh_collision(level, placement, records)
 			level.add_child(body); count += 1
 		else: body.free()
@@ -91,6 +96,33 @@ static func apply(level: Node3D, source: Dictionary, area: int, native_context: 
 			shape.shape = box; shape.position = Vector3(-float(x[0]) - float(x[1]), -float(y[0]) - float(y[1]), float(z[0]) + float(z[1])) / 512.0; wall_body.add_child(shape)
 		level.add_child(wall_body)
 	return count
+## The door panel regions of an area (every route's source panel, room-local, grown by DOOR_MARGIN). The original's door actor makes them solid, and the map's own faces there are the only closed-door collision, so the limit below never drops them.
+static func door_keep(stage: String, area: int) -> Array[AABB]:
+	if not door_panels.has(stage):
+		var path := "res://assets/levels/%s/doors.json" % stage; var data: Variant = JSON.parse_string(FileAccess.get_file_as_string(path)) if FileAccess.file_exists(path) else null
+		door_panels[stage] = data.get("area_transitions", []) if data is Dictionary else []
+	var boxes: Array[AABB] = []
+	for route: Dictionary in door_panels[stage]:
+		if int(route.get("source_area", -1)) != area: continue
+		var panel: Variant = route.get("source_panel", null)
+		if not panel is Dictionary: panel = route.get("native_door", {}).get("source_panel", null)
+		if not panel is Dictionary or not panel.has("bounds"): continue
+		var low: Array = panel["bounds"]["min"]; var high: Array = panel["bounds"]["max"]
+		var grown := Vector3(DOOR_MARGIN, 0.02, DOOR_MARGIN); grown[int(panel["axis"])] = 0.01; boxes.append(AABB(Vector3(float(low[0]), float(low[1]), float(low[2])) - grown, Vector3(float(high[0]) - float(low[0]), float(high[1]) - float(low[1]), float(high[2]) - float(low[2])) + grown * 2.0))
+	return boxes
+static func _to_level(level: Node3D, mesh: Node) -> Transform3D:
+	var to_level := Transform3D.IDENTITY; var node: Node = mesh
+	while node != null and node != level: to_level = (node as Node3D).transform * to_level; node = node.get_parent()
+	return to_level
+## Whether a placement whose records replace its mesh collision holds a door panel: the records never cover the doorway, so its panel faces stay as the closed door's collision (only those; everything else of the mesh is dropped as before).
+static func _near_door(level: Node3D, meshes: Array) -> bool:
+	var keep: Array = level.get_meta("native_door_keep", [])
+	for mesh: MeshInstance3D in meshes:
+		if mesh.mesh == null: continue
+		var box := _to_level(level, mesh) * mesh.mesh.get_aabb()
+		for door: AABB in keep:
+			if box.intersects(door): return true
+	return false
 ## A placement that keeps its mesh collision (it holds a kind the port has no shape for) is solid only where the original's records are: mesh faces outside every record box (the grass layer over the floor, vine and moss decoration) are dropped from the player's collision (GAME 0x800B36E8 only tests the records).
 static func _limit_mesh_collision(level: Node3D, placement: int, records: Array) -> void:
 	var boxes: Array[AABB] = []
@@ -99,9 +131,7 @@ static func _limit_mesh_collision(level: Node3D, placement: int, records: Array)
 		var x: Array = record["x"]; var y: Array = record["y"]; var z: Array = record["z"]
 		boxes.append(AABB(Vector3(-float(x[1]), -float(y[1]), float(z[0])) / 256.0, Vector3(float(x[1]) - float(x[0]), float(y[1]) - float(y[0]), float(z[1]) - float(z[0])) / 256.0).grow(LIMIT_MARGIN))
 	for mesh: MeshInstance3D in level.find_children("placement_%03d_model_*" % placement, "MeshInstance3D", true, false):
-		var to_level := Transform3D.IDENTITY; var node: Node = mesh
-		while node != null and node != level: to_level = (node as Node3D).transform * to_level; node = node.get_parent()
-		mesh.set_meta("native_collision_limit", {"boxes": boxes, "transform": to_level, "cache": {}})
+		mesh.set_meta("native_collision_limit", {"boxes": boxes, "keep": level.get_meta("native_door_keep", []), "transform": _to_level(level, mesh), "cache": {}})
 		for child in mesh.get_children():
 			if child is StaticBody3D and child.name == "RoomCollision_1":
 				for item in child.get_children():
@@ -124,10 +154,10 @@ static func filter_shape(mesh: Node, shape: Shape3D) -> Shape3D:
 	if shape is not ConcavePolygonShape3D: return shape
 	var cache: Dictionary = limit["cache"]
 	if cache.has(shape): return cache[shape]
-	var faces := (shape as ConcavePolygonShape3D).get_faces(); var kept := PackedVector3Array()
+	var faces := (shape as ConcavePolygonShape3D).get_faces(); var kept := PackedVector3Array(); var regions: Array = limit["keep"] + limit["boxes"]
 	for index in range(0, faces.size() - 2, 3):
 		var centre: Vector3 = (limit["transform"] as Transform3D) * ((faces[index] + faces[index + 1] + faces[index + 2]) / 3.0)
-		for box: AABB in limit["boxes"]:
+		for box: AABB in regions:
 			if box.has_point(centre): kept.append(faces[index]); kept.append(faces[index + 1]); kept.append(faces[index + 2]); break
 	var result: ConcavePolygonShape3D = null
 	if not kept.is_empty():

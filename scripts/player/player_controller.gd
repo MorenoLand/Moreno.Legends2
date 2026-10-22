@@ -395,7 +395,7 @@ func _physics_process(delta: float) -> void:
 	placement_frames = maxi(placement_frames - 1, 0)
 	if not free_flight and not no_clip and hurt_phase.is_empty():
 		var drift := global_position - before_slide.origin; drift.y = 0.0
-		if drift.length() > intended.length() + 0.08:
+		if drift.length() > intended.length() + 0.08 and not test_move(before_slide, intended):
 			global_position = Vector3(before_slide.origin.x + intended.x, global_position.y, before_slide.origin.z + intended.z); velocity.x = intended.x / delta if delta > 0.0 else 0.0; velocity.z = intended.z / delta if delta > 0.0 else 0.0
 	if not free_flight and not no_clip and is_on_floor(): _leave_actor_top()
 	if not free_flight and is_on_floor() and hurt_phase.is_empty() and jump_phase in [JumpPhase.RISING, JumpPhase.RELEASED, JumpPhase.FALLING]:

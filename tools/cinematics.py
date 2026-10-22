@@ -219,6 +219,22 @@ def native_texture_uploads(source, vram):
 		for row in range(height):
 			start = ((y + row) * 1024 + x) * 2; count = width * 2; vram[start:start + count] = source[cursor:cursor + count]; cursor += count
 	return vram
+def opening_backdrops(overlay):
+	import world
+	world.check_overlay_words(overlay, {0x800E7294: 0x3C03800F, 0x800E729C: 0x24630AC0, 0x800E72A8: 0x8C440000, 0x800E72AC: 0x0C02FBD9}, "ST02 native background binding")
+	areas = {}
+	for area in range(8):
+		pointer = struct.unpack_from("<I", overlay, 0x30 + 0x800F0AC0 - 0x800E7000 + area * 4)[0]
+		if not 0x800E7000 <= pointer < 0x800E7000 + len(overlay) - 0x30: continue
+		colors = []; offset = 0x30 + pointer - 0x800E7000
+		while True:
+			word = struct.unpack_from("<I", overlay, offset)[0]
+			if word & 0x80000000: break
+			if word >> 24 or len(colors) >= 256: raise ValueError("Invalid native opening background band")
+			colors.append(list(struct.pack("<I", word)[:3])); offset += 4
+		if len(colors) % 2: raise ValueError("Opening background bands must hold a top and a bottom colour")
+		areas[str(area)] = {"source_bands": hex(pointer), "colors": colors}
+	return {"source_call": "ST02T0x800E72AC->GAME0x800BEF64", "source_table": "0x800F0AC0", "draw_source": "GAME0x800BEFB8 (called from GAME0x800B0378): 32-row Gouraud bands, a top and a bottom colour word each, drawn behind everything", "areas": areas}
 def export_opening(dat_dir=None, output_dir=None):
 	dat_dir = Path(dat_dir) if dat_dir else ROOT / "build/disc-assets/DAT"; output_dir = Path(output_dir) if output_dir else ROOT / "assets/opening"; output_dir.mkdir(parents=True, exist_ok=True); work = ROOT / "build/opening"; work.mkdir(parents=True, exist_ok=True); export_maps("ST02", dat_dir, output_dir / "levels"); overlay_path = dat_dir / "ST02T.BIN"; overlay = overlay_path.read_bytes(); stage_vram, _ = textures(overlay_path); stage_vram = native_texture_uploads(overlay, stage_vram); banks = []
 	actor_vram = bytearray(stage_vram)
@@ -231,7 +247,7 @@ def export_opening(dat_dir=None, output_dir=None):
 			if not model.get("mesh_offset"): continue
 			index = model["index"]; destination = directory / ("model_%02d.glb" % index); metadata = export_actor_model(payload, index, normalized, destination) if model["mesh"]["bone_count"] else export_static_actor(payload, index, normalized, destination); metadata["source_surfaces"] = record_source(destination, path.name, index, payload); metadata["source_archive"] = path.name; metadata["model_file"] = destination.relative_to(output_dir).as_posix(); models.append({**model, "export": metadata})
 		banks.append({"archive": "DAT/" + path.name, "sha256": hashlib.sha256(source).hexdigest(), "decoded_section": section, "models": models})
-	manifest = {"stage": "ST02", "source": {"overlay": "DAT/ST02T.BIN", "sha256": hashlib.sha256(overlay).hexdigest(), "stage_initializer": "0x800E712C", "area_initializer": "0x800E7228", "startup_driver": "0x800EF1E4", "startup_helper": "GAME0x800C0C5C", "command_stream": "RAM0x800F1B28", "timeline": "RAM0x800F2374", "seed": "0x873CA9E6", "command_interpreter": "GAME0x800C1204", "timeline_update": "GAME0x800C0D70", "timeline_callback_dispatch": "ST02T0x800EF2AC"}, "commands": opening_commands(overlay), "timeline": opening_timeline(overlay), "levels": "levels/ST02/manifest.json", "actor_banks": banks}; callbacks, records = opening_callbacks(overlay); manifest.update(callbacks=callbacks, callback_records=records, xa=opening_xa(overlay), native_floor_shapes=export_floor_shapes(dat_dir / "ST02.BIN"), **opening_actor_timelines(overlay)); target = output_dir / "manifest.json"; write_output(target, json.dumps(manifest, indent=2) + "\n", encoding="utf-8"); return manifest
+	manifest = {"stage": "ST02", "source": {"overlay": "DAT/ST02T.BIN", "sha256": hashlib.sha256(overlay).hexdigest(), "stage_initializer": "0x800E712C", "area_initializer": "0x800E7228", "startup_driver": "0x800EF1E4", "startup_helper": "GAME0x800C0C5C", "command_stream": "RAM0x800F1B28", "timeline": "RAM0x800F2374", "seed": "0x873CA9E6", "command_interpreter": "GAME0x800C1204", "timeline_update": "GAME0x800C0D70", "timeline_callback_dispatch": "ST02T0x800EF2AC"}, "commands": opening_commands(overlay), "timeline": opening_timeline(overlay), "levels": "levels/ST02/manifest.json", "actor_banks": banks}; callbacks, records = opening_callbacks(overlay); manifest.update(callbacks=callbacks, callback_records=records, backdrops=opening_backdrops(overlay), xa=opening_xa(overlay), native_floor_shapes=export_floor_shapes(dat_dir / "ST02.BIN"), **opening_actor_timelines(overlay)); target = output_dir / "manifest.json"; write_output(target, json.dumps(manifest, indent=2) + "\n", encoding="utf-8"); return manifest
 def opening_cli():
 	parser = argparse.ArgumentParser(); parser.add_argument("--dat-dir", type=Path); parser.add_argument("--output-dir", type=Path); args = parser.parse_args(); manifest = export_opening(args.dat_dir, args.output_dir); print(json.dumps({"actor_models": sum(len(bank["models"]) for bank in manifest["actor_banks"]), "stage": manifest["stage"]}))
 

@@ -14,6 +14,16 @@ const PART_HIT := 0x15C
 const MESH := 0xA4
 ## A solid body blocks the player's step-over: the volume reaches at least this high (raw units, the player's body is 0.7 m tall) from the object's floor.
 const SOLID_HEIGHT := 192.0
+## The collision list of an actor (GAME 0x800B93E4, category of the type byte at +2 through SLES 0x8003E408): a count word, then 16 byte records (x, z and y limits as halfword pairs in the actor's frame, y up is negative; low halfword of the last word the shape kind, high halfword the categories it blocks, the player is bit 0). Types 0x20..0x3F keep the list at +0xB8, types 0x60..0x9F at +0x9C; the others (enemies, 0x40) have none.
+const BODY_LISTS := {0x20: 0xB8, 0x60: 0x9C}
+const BODY_RECORD := 16
+const BODY_PLAYER := 1
+const BODY_LIMIT := 16
+## A body registered with a parameter of 0 or more sits at a joint of the actor (SLES 0x8003EDEC: the parameter-th set bit of the mask at +0xCC picks a record of the 0xB0 byte pool at 0x8009C940; GAME 0x800BA200 reads its position halfwords at +0x80 + 8 * (parameter & 3)).
+const JOINT_MASK := 0xCC
+const JOINT_POOL := 0x8009C940
+const JOINT_STRIDE := 0xB0
+const JOINT_POSITION := 0x80
 ## Effect objects draw the model whose header is at +0x94 (GAME 0x80025540): the matrix is RotMatrix (SLES 0x80060824) of the angles at +0x28, +0x2A and +0x2C with its columns scaled by the halfwords at +0xB0, +0xB2 and +0xB4 (4096 is one).
 const HEADER := 0x94
 const ANGLES := 0x28
@@ -50,9 +60,12 @@ var body := AABB()
 var parts: Array[Dictionary] = []
 ## Liftable blocks (the attach rule's lift_classes) belong to the port's Lifter: the host drives the original block code through the player's lift fields.
 var lift_host: Node
-var solid_always := false
 var blocker: StaticBody3D
-var blocker_shape: CollisionShape3D
+var blocker_shapes: Array[CollisionShape3D] = []
+var blocker_boxes: Array = []
+## The kind of the solid body the actor registered this frame (GAME 0x800B8AA0), -1 when it has none: kinds 0 and 1 turn their boxes with the actor, kinds 2 and 3 keep them axis aligned.
+var body_kind := -1
+var body_param := -1
 
 
 func configure(runner_machine: Machine, actor: int, path: String, animations: Array, scale_raw: Vector3, depth_cue: Dictionary, source_surfaces: Array = []) -> bool:
@@ -91,11 +104,6 @@ func configure(runner_machine: Machine, actor: int, path: String, animations: Ar
 	return true
 
 
-func make_solid() -> void:
-	solid_always = true
-	_blocker()
-
-
 func make_lift(host: Node) -> void:
 	lift_host = host
 	_blocker()
@@ -107,11 +115,10 @@ func _blocker() -> void:
 	if blocker != null:
 		return
 	blocker = StaticBody3D.new()
+	if lift_host == null:
+		blocker.name = "NativeActorCollision"
 	blocker.collision_layer = 0
 	blocker.collision_mask = 0
-	blocker_shape = CollisionShape3D.new()
-	blocker_shape.shape = BoxShape3D.new()
-	blocker.add_child(blocker_shape)
 	add_child(blocker)
 
 
@@ -131,14 +138,77 @@ func release_lift(_direction: Vector3, _vertical_raw: int, _forward_raw: int) ->
 ## An idle block is solid for the port's player; its volume is the actor's bounds record (+0x58).
 func _lift_body() -> void:
 	var bounds := machine.u32(address + BOUNDS)
-	blocker.collision_layer = 1 if (solid_always or machine.u8(address + 8) == 1) and bounds != 0 else 0
-	if bounds == 0:
+	if bounds == 0 or machine.u8(address + 8) != 1:
+		_set_boxes([])
 		return
-	var box := blocker_shape.shape as BoxShape3D
 	var low := Vector3(machine.s16(bounds), machine.s16(bounds + 4), machine.s16(bounds + 8))
 	var high := Vector3(machine.s16(bounds + 2), machine.s16(bounds + 6), machine.s16(bounds + 10))
-	box.size = Vector3(high.x - low.x, maxf(high.y - low.y, SOLID_HEIGHT), high.z - low.z) / 256.0
-	blocker_shape.position = Vector3(-(low.x + high.x) * 0.5 / 256.0, -high.y / 256.0 + box.size.y * 0.5, (low.z + high.z) * 0.5 / 256.0)
+	var size := Vector3(high.x - low.x, maxf(high.y - low.y, SOLID_HEIGHT), high.z - low.z) / 256.0
+	_set_boxes([[Vector3(-(low.x + high.x) * 0.5 / 256.0, -high.y / 256.0 + size.y * 0.5, (low.z + high.z) * 0.5 / 256.0), size]])
+
+
+## An actor that registered a solid body this frame (GAME 0x800B8AA0) blocks the player in the boxes of its collision list: GAME 0x800B927C (kinds 0 and 2) and 0x800B8CAC (kinds 1 and 3) push the target out of them through the box shapes of the placement walls (kinds 0 to 3 are plain boxes). Kinds 0 and 1 turn the boxes with the actor, kinds 2 and 3 keep them axis aligned.
+func _solid_body() -> void:
+	var boxes := []
+	var list := _body_list() if body_kind >= 0 else 0
+	for index in mini(machine.u32(list), BODY_LIMIT) if list != 0 else 0:
+		var record := list + 4 + index * BODY_RECORD
+		if machine.u16(record + 14) & BODY_PLAYER == 0 or machine.u16(record + 12) > 3:
+			continue
+		var low := Vector3(machine.s16(record), machine.s16(record + 8), machine.s16(record + 4))
+		var high := Vector3(machine.s16(record + 2), machine.s16(record + 10), machine.s16(record + 6))
+		var size := (high - low) / 256.0
+		if size.x > 0.0 and size.y > 0.0 and size.z > 0.0:
+			boxes.append([Vector3(-(low.x + high.x), -(low.y + high.y), low.z + high.z) * 0.5 / 256.0, size])
+	_set_boxes(boxes)
+	if blocker != null:
+		blocker.rotation.y = 0.0 if body_kind <= 1 else -rotation.y
+		blocker.position = basis.inverse() * _joint_offset() if body_param >= 0 else Vector3.ZERO
+
+
+## Where the body's joint lies relative to the actor (world axes).
+func _joint_offset() -> Vector3:
+	var seen := 0
+	for bit in 32:
+		if machine.u32(address + JOINT_MASK) & (0x80000000 >> bit) != 0:
+			seen += 1
+			if seen == body_param + 1:
+				var joint := JOINT_POOL + bit * JOINT_STRIDE + JOINT_POSITION + 8 * (body_param & 3)
+				return Vector3(-(machine.s16(joint) - machine.s16(address + 0x12)), -(machine.s16(joint + 2) - machine.s16(address + 0x16)), machine.s16(joint + 4) - machine.s16(address + 0x1A)) / 256.0
+	return Vector3.ZERO
+
+
+func _body_list() -> int:
+	var type := machine.u8(address + 2)
+	var category := type & 0x10 if type < 0x20 else type & 0xE0
+	if category == 0x80:
+		category = 0x60
+	var list := machine.u32(address + int(BODY_LISTS[category])) if BODY_LISTS.has(category) else 0
+	return list if list >= 0x80000000 and list < 0x80200000 else 0
+
+
+## The static body carries one box shape per entry ([centre, size] in the actor's frame); a body taller than it is wide is not stood on (the port's player slides off it, as off the native NPCs' bodies).
+func _set_boxes(boxes: Array) -> void:
+	if boxes.is_empty() and blocker == null:
+		return
+	_blocker()
+	if boxes != blocker_boxes:
+		blocker_boxes = boxes
+		while blocker_shapes.size() > boxes.size():
+			var spare: CollisionShape3D = blocker_shapes.pop_back()
+			blocker.remove_child(spare)
+			spare.free()
+		while blocker_shapes.size() < boxes.size():
+			var added := CollisionShape3D.new()
+			added.shape = BoxShape3D.new()
+			blocker.add_child(added)
+			blocker_shapes.append(added)
+		for index in boxes.size():
+			(blocker_shapes[index].shape as BoxShape3D).size = boxes[index][1]
+			blocker_shapes[index].position = boxes[index][0]
+		var first: Vector3 = boxes[0][1] if not boxes.is_empty() else Vector3.ZERO
+		blocker.set_meta("native_unstandable", first.y > maxf(first.x, first.z))
+	blocker.collision_layer = 1 if not boxes.is_empty() else 0
 
 
 func class_id() -> int:
@@ -178,8 +248,10 @@ func sync() -> void:
 		light = color
 		for material in materials:
 			material.set_shader_parameter("light_rgb", color)
-	if lift_host != null or solid_always:
+	if lift_host != null:
 		_lift_body()
+	elif not passive:
+		_solid_body()
 	if not passive:
 		_parts()
 	animate()

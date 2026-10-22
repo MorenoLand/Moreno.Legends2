@@ -60,3 +60,14 @@ func _physics_process(delta: float) -> void:
 	if not automatic or current_control < 0: return
 	elapsed += delta * NATIVE_HZ
 	while elapsed >= 1.0: elapsed -= 1.0; native_tick()
+## Playback keyframes (scene_playback.gd): where the clock stands, put back without the record signals.
+func capture() -> Array: return [current_control, record_index, record_counter, pose, event_code, record_flags, remaining_ticks, held]
+func restore(state: Array) -> void:
+	var code := int(state[0])
+	if code < 0 or not controls.has(code) or not is_instance_valid(animation_player): current_control = -1; return
+	if code != current_control:
+		var clip: Dictionary = controls[code]; records = clip["records"]; offsets.clear(); var ticks := 0
+		for record: Dictionary in records: offsets.append(ticks); ticks += _duration(record)
+		current_control = code; revision += 1; animation_player.play(str(clip["name"])); animation_player.pause()
+	record_index = int(state[1]); record_counter = int(state[2]); pose = int(state[3]); event_code = int(state[4]); record_flags = int(state[5]); remaining_ticks = int(state[6]); held = bool(state[7])
+	_apply_pose()

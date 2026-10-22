@@ -1,5 +1,6 @@
 extends Control
 signal done(success: bool)
+const Playback := preload("res://scripts/cinematics/scene_playback.gd")
 static var manifest_cache: Dictionary = {}
 static var atlas_cache: Dictionary = {}
 var profile: Dictionary = {}
@@ -90,7 +91,7 @@ func native_tick() -> void:
 		done.emit(true)
 func _process(delta: float) -> void:
 	if manual or not busy: return
-	elapsed += delta * float(profile.get("tick_rate", 25))
+	elapsed += delta * float(profile.get("tick_rate", 25)) * float(maxi(Playback.speed, 0))  # follows a scene's fast forward and pause
 	while elapsed >= 1.0 and busy: elapsed -= 1.0; native_tick()
 func is_idle() -> bool: return not busy
 func is_covered() -> bool: return visible and (bool(profile.get("feedback", false)) and visual_finished or not bool(profile.get("feedback", false)) and shade == 255)

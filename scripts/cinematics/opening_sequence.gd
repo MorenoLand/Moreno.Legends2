@@ -45,6 +45,14 @@ var orbit_curve: Dictionary = {}
 var eye_curve: Dictionary = {}
 var transition := 0
 var trig: Array = []
+const Playback := preload("res://scripts/cinematics/scene_playback.gd")
+const KEYFRAMES := 750
+const META := ["native_depth_cue_mode", "native_yaw_previous", "native_yaw_current"]
+const STATE := ["phase", "step", "segment", "segment_tick", "phase_tick", "total_tick", "command_index", "area", "bank", "target_mode", "target_slot", "eye_mode", "focus", "relative_focus", "orbit", "eye", "focus_velocity", "orbit_velocity", "eye_velocity", "transition", "xa_volume", "xa_fade", "xa_pending", "xa_key", "xa_start"]
+var keyframes: Array = []
+var maps: Array[Node] = []
+var xa_key := ""
+var xa_start := 0
 func configure(path: String = "res://assets/opening/manifest.json") -> bool:
 	if not FileAccess.file_exists(path): prepared.emit(false); return false
 	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
@@ -56,7 +64,7 @@ func configure(path: String = "res://assets/opening/manifest.json") -> bool:
 	camera = Camera3D.new(); camera.near = 0.1875; camera.far = 2048.0; camera.fov = rad_to_deg(2.0 * atan(120.0 / 384.0)); camera.current = true; world.add_child(camera); camera.set_meta("screen_offset", Vector2(160, 120)); camera.set_meta("projection_h", 384.0)
 	var environment := WorldEnvironment.new(); environment.environment = Environment.new(); environment.environment.background_mode = Environment.BG_CANVAS; environment.environment.background_canvas_max_layer = -1; environment.environment.background_color = Color.BLACK; world.add_child(environment)
 	effects = preload("res://scripts/cinematics/opening_effects.gd").new(); world.add_child(effects)
-	if effects.configure(camera, manifest): trig = effects.data.get("trig4096", [])
+	if effects.configure(camera, manifest): trig = effects.data.get("trig4096", []); effects.set_area(area)
 	audio = AudioStreamPlayer.new(); audio.bus = "BGM" if AudioServer.get_bus_index("BGM") >= 0 else "Master"; add_child(audio)
 	var audio_path: String = directory.path_join("audio/manifest.json")
 	if FileAccess.file_exists(audio_path):
@@ -86,7 +94,7 @@ func _prepare() -> void:
 		var path: String = level_path.get_base_dir().path_join(str(level["file"])); var resource: Resource = load(path)
 		if not resource is PackedScene: prepared.emit(false); return
 		scenes["area%d" % int(level["index"])] = resource
-	running = true; _segment_enter(); _commands(); _camera_update(); prepared.emit(true)
+	running = true; Playback.begin(self); _segment_enter(); _commands(); _camera_update(); prepared.emit(true)
 func _resize() -> void:
 	if not is_instance_valid(viewport): return
 	if is_instance_valid(effects) and is_instance_valid(effects.background): effects.background.scale = size / Vector2(320, 240); effects.flashes.scale = effects.background.scale; effects.overlay_add.scale = effects.background.scale; effects.overlay_opaque.scale = effects.background.scale
@@ -94,17 +102,18 @@ func _unhandled_input(event: InputEvent) -> void:
 	if running and (event.is_action_pressed("ui_accept") or event.is_action_pressed("ui_cancel")):
 		get_viewport().set_input_as_handled(); _finish(true)
 func _process(delta: float) -> void:
-	if not running: return
+	if not running or Playback.speed <= 0: return
 	if audio.playing:
 		var position := audio.get_playback_position() + AudioServer.get_time_since_last_mix()
 		accumulator += maxf(0.0, position - xa_clock) * 25.0; xa_clock = maxf(xa_clock, position)
-	else: accumulator += delta * 25.0
-	var generation := xa_generation
-	while accumulator >= 1.0 and running:
-		accumulator -= 1.0; native_tick()
+	else: accumulator += delta * 25.0 * float(Playback.speed)
+	var generation := xa_generation; var steps := 0
+	while accumulator >= 1.0 and running and (Playback.speed <= 1 or steps < Playback.MAX_STEPS):
+		accumulator -= 1.0; steps += 1; native_tick()
 		if generation != xa_generation: break
 func native_tick() -> void:
 	if not running: return
+	if veil.is_idle(): _keyframe()
 	_callback()
 	if not running: return
 	_commands(); _curves(); _actors_tick(); _camera_update(); effects.native_tick()
@@ -163,6 +172,7 @@ func _callback() -> void:
 		if action.has("position") and actors.has(slot): actors[slot]["node"].position = _world(_vector(action["position"]))
 		if action.has("yaw") and actors.has(slot): actors[slot]["node"].rotation.y = -float(action["yaw"]) * TAU / 4096.0
 		if actors.has(slot): actors[slot]["fields"].merge(action.get("fields", {}), true)
+		elif action.has("position") or action.has("fields"): effects.set_actor(slot, _vector(action["position"]) if action.has("position") else null, action.get("fields", {}))
 	for clear: Dictionary in manifest.get("callbacks", {}).get(key, {}).get("pool_clears", []):
 		if int(clear["tick"]) != segment_tick: continue
 		for slot: int in actors.keys():
@@ -173,7 +183,7 @@ func _play_xa(key: String) -> void:
 	xa_volume = 127; xa_fade = 0; audio.volume_db = 0.0
 	for entry: Dictionary in manifest.get("xa", {}).get("entries", []):
 		if str(entry["phase"]) != key or not audio_entries.has(str(int(entry["id"]))): continue
-		audio.stream = audio_streams[str(int(entry["id"]))] as AudioStream; audio.play(); xa_clock = 0.0; accumulator = 0.0; xa_generation += 1; xa_pending = true; return
+		audio.stream = audio_streams[str(int(entry["id"]))] as AudioStream; audio.play(); xa_key = str(int(entry["id"])); xa_start = total_tick; xa_clock = 0.0; accumulator = 0.0; xa_generation += 1; xa_pending = true; return
 func _xa_ready() -> bool:
 	if xa_pending and audio.get_playback_position() <= 0.0: return false
 	xa_pending = false; return true
@@ -271,13 +281,13 @@ func _control(slot: int, index: int, restart: bool = false) -> void:
 	animation.callback_mode_process = AnimationMixer.ANIMATION_CALLBACK_MODE_PROCESS_MANUAL; animation.play(clip); animation.advance(0); actor["control"] = index; actor["clock"] = 0
 func _remove(slot: int) -> void:
 	effects.remove(slot)
-	if actors.has(slot): actors[slot]["node"].queue_free(); actors.erase(slot)
+	if actors.has(slot): (actors[slot]["node"] as Node3D).hide(); actors.erase(slot)  # kept (hidden) so that a rewind can bring it back
 func _set_bank(value: String) -> void:
 	bank = value; effects.set_bank(value)
 func _set_area(index: int) -> void:
 	var previous: Node = world.get_node_or_null("StageMap")
-	if is_instance_valid(previous): world.remove_child(previous); previous.queue_free()
-	area = index
+	if is_instance_valid(previous): world.remove_child(previous); maps.append(previous)
+	area = index; effects.set_area(index)
 	if not scenes.has("area%d" % index): return
 	var node: Node3D = (scenes["area%d" % index] as PackedScene).instantiate(); node.name = "StageMap"
 	node.set_meta("native_map_face_flags", bool(map_face_flags.get(index, false)))
@@ -363,14 +373,100 @@ func _camera_update() -> void:
 		if camera.position.distance_squared_to(world_target) > 0.000001: camera.look_at(world_target, Vector3.UP)
 	else:
 		var pitch: float = orbit.x * TAU / 4096.0; var yaw: float = orbit.y * TAU / 4096.0; var offset := Vector3(sin(pitch) * cos(yaw), sin(yaw), cos(pitch) * cos(yaw)) * orbit.z; var rotation: Basis = Basis(Vector3.RIGHT, yaw) * Basis(Vector3.UP, -pitch); var rows: Array[Vector3] = [Vector3(rotation.x.x, rotation.y.x, rotation.z.x), Vector3(rotation.x.y, rotation.y.y, rotation.z.y), Vector3(rotation.x.z, rotation.y.z, rotation.z.z)]; camera.basis = _view_basis(rows).inverse(); camera.position = _world(target - offset)
-	camera.set_meta("native_yaw_previous", camera.get_meta("native_yaw_current", 0)); camera.set_meta("native_yaw_current", -int(orbit.y) & 4095)
+	_native_yaw(target)
+# The camera global the effects read (ST02T 0x800EAF80 and the strip code, camera struct 0x8007D08E): the Y rotation, which SLES 0x80015B6C stores from the orbit's first angle and the look-at 0x80015E70 from the heading of the eye to target direction.
+func _native_yaw(target: Vector3) -> void:
+	var yaw := int(orbit.x) & 4095
+	if eye_mode != 0: yaw = roundi(atan2(target.x - eye.x, target.z - eye.z) * 4096.0 / TAU) & 4095
+	camera.set_meta("native_yaw_previous", camera.get_meta("native_yaw_current", yaw)); camera.set_meta("native_yaw_current", yaw)
 func _native_view(control: Array) -> void:
 	var packed := PackedByteArray(); packed.resize(20)
 	for index: int in range(5): packed.encode_u32(index * 4, int(control[index]))
 	var rows: Array[Vector3] = []
 	for row: int in range(3): rows.append(Vector3(packed.decode_s16(row * 6), packed.decode_s16(row * 6 + 2), packed.decode_s16(row * 6 + 4)) / 4096.0)
 	var inverse: Basis = _view_basis(rows).inverse(); var translation := Vector3(_s32(int(control[5])), -_s32(int(control[6])), -_s32(int(control[7]))) / 256.0
-	camera.transform = Transform3D(inverse, -(inverse * translation)); camera.set_meta("native_yaw_previous", camera.get_meta("native_yaw_current", 0)); camera.set_meta("native_yaw_current", -int(orbit.y) & 4095)
+	camera.transform = Transform3D(inverse, -(inverse * translation)); _native_yaw(focus)
 func _view_basis(rows: Array[Vector3]) -> Basis: return Basis(Vector3(-rows[0].x, rows[1].x, rows[2].x), Vector3(-rows[0].y, rows[1].y, rows[2].y), Vector3(rows[0].z, -rows[1].z, -rows[2].z))
 func _finish(skipped: bool) -> void:
-	running = false; audio.stop(); finished.emit(skipped)
+	running = false; Playback.end(self); audio.stop(); finished.emit(skipped)
+func _exit_tree() -> void:
+	Playback.end(self)
+	for node: Node in maps:
+		if is_instance_valid(node) and node.get_parent() == null: node.free()
+# Playback (scene_playback.gd): a keyframe of the scene before every quiet tick (no fade running), the last 30 s. Fast forward pitches the voice that clocks the scene, rewind restores a keyframe and restarts the voice at its tick.
+func playback_root() -> Node: return self
+func playback_hz() -> float: return 25.0
+func playback_ticks() -> int: return total_tick
+func playback_voices() -> Array: return [audio]
+func playback_rewindable() -> bool: return running and veil.is_idle()
+func playback_active() -> bool: return running and is_visible_in_tree()  # the tree is paused behind the title menu
+func playback_back(count: int) -> int:
+	var stepped := 0; var state: Dictionary = {}
+	while stepped < count and not keyframes.is_empty(): state = keyframes.pop_back(); stepped += 1
+	if stepped > 0: _restore_keyframe(state)
+	return stepped
+func playback_resync() -> void:
+	var stream: AudioStream = audio_streams.get(xa_key)
+	var position := float(total_tick - xa_start) / 25.0
+	if stream == null or stream.get_length() > 0.0 and position >= stream.get_length(): audio.stop(); return
+	audio.stream = stream; audio.volume_db = linear_to_db(maxf(float(xa_volume) / 127.0, 0.0001)); audio.play(position); xa_clock = position; accumulator = 0.0; xa_generation += 1; xa_pending = false
+func _keyframe() -> void:
+	var values: Array = []
+	for name: String in STATE: values.append(get(name))
+	var rows := {}
+	for slot: int in actors:
+		var actor: Dictionary = actors[slot]; var surfaces: Array = []
+		for surface: Dictionary in actor.get("face_surfaces", []): surfaces.append([(surface["material"] as ShaderMaterial).get_shader_parameter("uv_word"), (surface["material"] as ShaderMaterial).get_shader_parameter("part_visible")])
+		rows[slot] = {"actor": actor, "pose": Playback.pose(actor["node"]), "clock": actor["clock"], "control": actor["control"], "yaw": actor["yaw"], "forward": actor["forward"], "fields": actor["fields"].duplicate(), "surfaces": surfaces}
+	var layers: Array = []
+	for layer: Dictionary in effects.actors: layers.append([layer, layer["age"], layer["phases"].duplicate(), layer["source"], layer["parameter"]])
+	var frame := {"tick": total_tick, "values": values, "actors": rows, "curves": [focus_curve.duplicate(), orbit_curve.duplicate(), eye_curve.duplicate()], "effects": layers, "overlay": [effects.overlay_key, effects.overlay_tick], "map": world.get_node_or_null("StageMap"), "camera": [Playback.pose(camera)] + META.map(func(key: String) -> Variant: return camera.get_meta(key) if camera.has_meta(key) else null), "covered": veil.is_covered(), "additive": veil.effect != null and bool(veil.effect.get_shader_parameter("additive"))}
+	if not keyframes.is_empty() and int(keyframes.back()["tick"]) == total_tick: keyframes.pop_back()
+	keyframes.append(frame)
+	if keyframes.size() > KEYFRAMES: keyframes.pop_front()
+func _restore_keyframe(frame: Dictionary) -> void:
+	for index in STATE.size(): set(STATE[index], frame["values"][index])
+	focus_curve = frame["curves"][0].duplicate(); orbit_curve = frame["curves"][1].duplicate(); eye_curve = frame["curves"][2].duplicate()
+	for slot: int in actors:
+		if not frame["actors"].has(slot): (actors[slot]["node"] as Node3D).hide()
+	actors.clear()
+	for slot: int in frame["actors"]:
+		var row: Dictionary = frame["actors"][slot]; var actor: Dictionary = row["actor"]; var node := actor["node"] as Node3D
+		actor["clock"] = row["clock"]; actor["control"] = row["control"]; actor["yaw"] = row["yaw"]; actor["forward"] = row["forward"]; actor["fields"].clear(); actor["fields"].merge(row["fields"])
+		Playback.apply(node, row["pose"]); node.show(); actors[slot] = actor
+		var surfaces: Array = actor.get("face_surfaces", [])
+		for index in mini(surfaces.size(), row["surfaces"].size()):
+			(surfaces[index]["material"] as ShaderMaterial).set_shader_parameter("uv_word", row["surfaces"][index][0]); (surfaces[index]["material"] as ShaderMaterial).set_shader_parameter("part_visible", row["surfaces"][index][1])
+		_pose(actor)
+	for layer: Dictionary in effects.actors:
+		for mesh: MeshInstance3D in layer["meshes"]: mesh.hide()
+	var live: Array[Dictionary] = []
+	for row: Array in frame["effects"]:
+		var layer: Dictionary = row[0]; layer["age"] = row[1]; layer["phases"] = row[2].duplicate(); layer["source"] = row[3]; layer["parameter"] = row[4]; live.append(layer)
+		for mesh: MeshInstance3D in layer["meshes"]: mesh.show()
+	effects.actors = live; effects.bank = bank; effects.overlay_key = frame["overlay"][0]; effects.overlay_tick = frame["overlay"][1]
+	var map: Node = frame["map"]; var current: Node = world.get_node_or_null("StageMap")
+	if current != map:
+		if current != null: world.remove_child(current); maps.append(current)
+		if map != null: maps.erase(map); world.add_child(map)
+	effects.set_area(area)
+	Playback.apply(camera, frame["camera"][0])
+	for index in 3:
+		var key: String = META[index]; var value: Variant = frame["camera"][index + 1]
+		if value == null: camera.remove_meta(key)
+		else: camera.set_meta(key, value)
+	for layer: Dictionary in effects.actors:
+		if int(layer["class"]) == 18 and int(layer["variant"]) in [0, 1, 2]: effects._cloud_materials(layer); effects._draw_cloud_meshes(layer)
+	effects.background.queue_redraw(); effects.flashes.queue_redraw(); effects.overlay_add.queue_redraw(); effects.overlay_opaque.queue_redraw()
+	if frame["covered"]: veil.hold(frame["additive"])
+	else: veil.clear()
+	accumulator = 0.0
+# The pose of an actor's model from its control and the ticks played since: the clip is restarted and sought to that tick.
+func _pose(actor: Dictionary) -> void:
+	var animation := actor["node"].find_child("AnimationPlayer", true, false) as AnimationPlayer
+	if animation == null or int(actor["control"]) < 0: return
+	var clip := ""
+	for source: Dictionary in actor["model"]["export"].get("animations", []):
+		if int(source["slot"]) == int(actor["control"]): clip = str(source["name"]); break
+	if clip.is_empty() or not animation.has_animation(clip): return
+	animation.play(clip); animation.seek(float(actor["clock"]) / 30.0, true)

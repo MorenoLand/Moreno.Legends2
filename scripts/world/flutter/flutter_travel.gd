@@ -6,6 +6,25 @@ var location_name := ""
 var footer_text := ""
 var heading_layout: Dictionary = {}
 const FRAME = preload("res://scripts/ui/common/native_menu_frame.gd")
+const Playback := preload("res://scripts/cinematics/scene_playback.gd")
+## Position and rate of the launch and landing animation: scene_playback.gd fast forwards, pauses and rewinds them (`cursor` is the tick that is shown).
+var cursor := 0
+var tick_rate := 25.0
+## True when one tick period has passed going forward, false while rewinding.
+func pace() -> bool:
+	var left := 1.0 / tick_rate
+	while is_inside_tree() and left > 0.0:
+		await get_tree().process_frame
+		if Playback.speed < 0: return false
+		left -= get_process_delta_time() * float(Playback.speed)
+	return true
+func playback_hz() -> float: return tick_rate
+func playback_ticks() -> int: return cursor
+func playback_back(count: int) -> int:
+	var before := cursor
+	cursor = maxi(cursor - count, 0)
+	return before - cursor
+func _exit_tree() -> void: Playback.end(self)
 const FONT = preload("res://assets/menu/native_font.fnt")
 func _input(event: InputEvent) -> void:
 	if heading_only: return
@@ -70,8 +89,12 @@ static func run(host: Node3D, bypass_story: bool) -> bool:
 				if str(record["stage"]) == str(host.parked_location.get("stage", "ST08")): point = Vector2(float(record["map_position"][0]), float(record["map_position"][1])); break
 	var rate := float(data["tick_rate"]); var launch := int(data["launch_ticks"]); var landing := int(data["landing_ticks"])
 	map.position = viewport_origin + Vector2(-96.0 - point.x, point.y - 136.0) * factor
-	for tick in launch:
-		ship.position.y = float(tick + 1) / 256.0; icon.position = viewport_origin + Vector2(160, 120) * factor - icon.size * 0.5; shadow.position = icon.position + Vector2(-float(tick + 1) * 0.5, tick + 1) * factor; await host.get_tree().create_timer(1.0 / rate, false).timeout
+	var timeline = presentation; timeline.tick_rate = rate; timeline.cursor = 0; Playback.begin(presentation)
+	while timeline.cursor < launch:
+		var tick: int = timeline.cursor
+		ship.position.y = float(tick + 1) / 256.0; icon.position = viewport_origin + Vector2(160, 120) * factor - icon.size * 0.5; shadow.position = icon.position + Vector2(-float(tick + 1) * 0.5, tick + 1) * factor
+		if await timeline.pace(): timeline.cursor = tick + 1
+	Playback.end(presentation)
 	while destination.is_empty():
 		if bool(presentation.get("cancel_requested")): presentation.queue_free(); return false
 		var direction := Input.get_vector("ui_left", "ui_right", "ui_down", "ui_up") + Vector2(Input.get_axis("strafe_left", "strafe_right"), Input.get_axis("move_back", "move_forward")); var step := direction.limit_length(1.0) * 4.0; point = (point + step).clamp(Vector2(-208, -200), Vector2(208, 184))
@@ -91,7 +114,12 @@ static func run(host: Node3D, bypass_story: bool) -> bool:
 		await host.get_tree().create_timer(1.0 / rate, false).timeout
 	if not await AssetStore.ensure_stage(str(destination["stage"])): presentation.queue_free(); return false
 	var redirect: Dictionary = {} if bypass_story else _arrive(host, data, destinations.find(destination), listing)
-	for tick in landing: ship.position.y = float(landing - tick - 1) / 256.0; shadow.position = icon.position + Vector2(-float(landing - tick - 1) * 0.5, landing - tick - 1) * factor; await host.get_tree().create_timer(1.0 / rate, false).timeout
+	timeline.cursor = 0; Playback.begin(presentation)
+	while timeline.cursor < landing:
+		var tick: int = timeline.cursor
+		ship.position.y = float(landing - tick - 1) / 256.0; shadow.position = icon.position + Vector2(-float(landing - tick - 1) * 0.5, landing - tick - 1) * factor
+		if await timeline.pace(): timeline.cursor = tick + 1
+	Playback.end(presentation)
 	host.get_node("HUD").move_child(host.transition_overlay, -1)
 	await host.transition_overlay.request(0x22)
 	presentation.queue_free()

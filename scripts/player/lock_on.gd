@@ -93,7 +93,8 @@ func _draw_reticle() -> void:
 	var immediate := mesh.mesh as ImmediateMesh; immediate.clear_surfaces()
 	var camera := get_viewport().get_camera_3d()
 	if not is_instance_valid(target) or camera == null: return
-	var special: bool = player.active_special() != 0
+	# SLES 0x8003BC6C tests the mode byte GAME 0x800CF4A8 stores at player+0x19E, not the equipped weapon or its usability.
+	var special: bool = player.special_mode != 0
 	var outer := float(0x90 if special else 0x80) / 256.0; var inner := float(0x70 if special else 0x60) / 256.0
 	var color := Color8(0, 0xE0, 0xE0)
 	if special: color = Color8(0xE0, 0xE0, 0) if _in_range() else Color8(0xE0, 0, 0)

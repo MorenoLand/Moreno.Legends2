@@ -45,6 +45,11 @@ static func _place_craft(host: Node3D, parent: Node3D, craft: Dictionary) -> voi
 static func land(host: Node3D, hull: Node3D) -> bool:
 	if not is_instance_valid(hull): return false
 	var stage := str(host.manifest_path.get_base_dir().get_file()); var data := descriptor(stage); var source := descriptor("ST08"); var point: Array = source["position_raw"]; var origin := Vector3(-float(point[0]), -float(point[1]), float(point[2])) / 256.0; var basis := Basis(Vector3.UP, hull.global_rotation.y); var rig := Node3D.new(); host.add_child(rig); rig.name = "FlutterLanding"; rig.global_transform = Transform3D(basis, hull.global_position - basis * origin); hull.hide()
+	var waiting: Array[Node3D] = []
+	for node: Node3D in host.find_children("*", "Node3D", true, false):
+		if node.visible and str(node.get_meta("native_spawn_set", "")).begins_with("controller"): node.hide(); waiting.append(node)
 	var success: bool = await host.native_scenes.run_scene(rig, "res://assets/levels/ST01/landing.json", int(data["area"]), false, {"0x800f2670": str(data["model_file"])})
+	for node: Node3D in waiting:
+		if is_instance_valid(node): node.show()
 	if is_instance_valid(hull): hull.show()
 	rig.queue_free(); return success

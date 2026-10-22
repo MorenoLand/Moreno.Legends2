@@ -1706,9 +1706,14 @@ def export_special_modes(output=None):
 				if not (instruction.mnemonic.startswith("b") and instruction.mnemonic != "break" or instruction.mnemonic == "j"): continue
 				branch_target = int(instruction.op_str.split(", ")[-1], 0)
 				if index >= 0 and window[index].address < branch_target <= address and position + 1 < len(window) and (value := a0_value(window[position + 1])) is not False: values.add(value)
-			calls.append({"call": "%#010x" % address, "values": sorted(values, key=lambda value: -1 if value is None else value)})
+			call = {"call": "%#010x" % address, "values": sorted(values, key=lambda value: -1 if value is None else value)}
+			# `a0 = area ? 1 : 0` (lbu $a0, 0x11($s1); beqz $a0 -> move $a0, $zero; else addiu $a0, 1): the mode follows the area.
+			if any(i.mnemonic == "lbu" and i.op_str == "$a0, 0x11($s1)" for i in window) and any(i.mnemonic == "beqz" and i.op_str.startswith("$a0, ") and int(i.op_str.split(", ")[1], 0) == address - 4 for i in window) and window[-1].mnemonic == "move" and window[-1].op_str == "$a0, $zero" and window[-2].mnemonic == "addiu" and window[-2].op_str == "$a0, $zero, 1": call["area_modes"] = {"0": 0, "other": 1}
+			calls.append(call)
 		modes = sorted({value for call in calls for value in call["values"] if isinstance(value, int)})
-		if calls: stages[stage] = {"mode": modes[0] if len(modes) == 1 else None, "candidates": modes, "calls": calls}
+		if calls:
+			stages[stage] = {"mode": modes[0] if len(modes) == 1 else None, "candidates": modes, "calls": calls}
+			if len(calls) == 1 and "area_modes" in calls[0]: stages[stage]["area_modes"] = calls[0]["area_modes"]
 	result = {"source": "GAME 0x800CF4A8(mode): mode 0 -> active special 0x18C = 0; mode 1 -> 0x18C = 0x18E when +6 == 0 and +0x19F != 0; mode 2 -> 0x18E = 0x0F, then the mode-1 rule", "stages": stages}
 	write_output(Path(output) if output else ROOT / "assets/player/special_modes.json", json.dumps(result, indent=1) + "\n", encoding="utf-8"); return result
 
@@ -2046,7 +2051,6 @@ RUNNER_OWNED_CLASSES = {"ST0F": {5, 7, 8, 19, 21, 27, 85, 96, 111}, "ST4A": {0, 
 RUNNER_OWNED_SCENES = {"ST0F": {0x50, 0x51, 0x52, 0x53, 0x54}}  # scenes the port has contracts for (the mine quest: arrival, pre-boss, boss intro and defeat, refractor) that the original handlers start themselves
 RUNNER_ORIGINAL_START = ("ST4A", "ST55")  # menu starts (no arrival transform) keep the player where the original stage set-up puts him: the tutorial and the license test begin at their own start points
 RUNNER_LIFT_CLASSES = {"ST4A": (0x25,)}  # class 0x25 is the liftable block of the tutorial's Lifter lesson (area 3 corridor, effect pool objects: idle state 1, carried 2, thrown 3, broken 4): the port's Lifter picks it up and throws it through the original block code
-RUNNER_SOLID_CLASSES = {"ST4A": (0x15,)}  # classes whose bodies block the port's player in every state (the tutorial chest, which the port's own prop used to do)
 RUNNER_KEEP_LOCAL_FLAGS = ("ST4A", "ST55")  # in-stage area changes of the original (request type 0xFF, GAME 0x800BA48C(-1)) keep the area-local flags 0x680-0x6DF and 0x710-0x74F (only the stage load, 0x800BA374 -> 0x800C02D0, clears them): the port does not clear them on its room loads here, the tutorial and test progress live in them
 RUNNER_MIN_STORY = {"ST39": 1, "ST09": 16, "ST3C": 12}  # ST39: the new-game opening (story byte 0) stays on the port scene contract; ST09 and ST3C: the story bytes whose area handlers start scenes 0x72 and 0x5D (scripted_actors dispatch rows 16 and 12), earlier story keeps the port content
 RUNNER_VALIDATED = ("ST09", "ST0E", "ST0F", "ST12", "ST13", "ST14", "ST15", "ST16", "ST17", "ST18", "ST19", "ST1C", "ST1D", "ST24", "ST25", "ST27", "ST28", "ST2E", "ST2F", "ST33", "ST35", "ST36", "ST37", "ST38", "ST39", "ST3C", "ST3E", "ST40", "ST41", "ST42", "ST43", "ST45", "ST46", "ST4A", "ST4C", "ST4E", "ST4F", "ST50", "ST51", "ST55", "ST58")
@@ -2070,7 +2074,7 @@ def runner_attach_rule(name):
 	if travel.exists(): scenes |= {entry["landing_scene"] for stage, entry in json.loads(travel.read_text(encoding="utf-8"))["docks"].items() if stage == name and "landing_scene" in entry and stage != "ST08"}
 	classes -= RUNNER_OWNED_CLASSES.get(name, set())
 	scenes -= RUNNER_OWNED_SCENES.get(name, set())
-	return {"enabled": name in RUNNER_VALIDATED, **({"solid_classes": list(RUNNER_SOLID_CLASSES[name])} if name in RUNNER_SOLID_CLASSES else {}), **({"lift_classes": list(RUNNER_LIFT_CLASSES[name])} if name in RUNNER_LIFT_CLASSES else {}), **({"keep_local_flags": True} if name in RUNNER_KEEP_LOCAL_FLAGS else {}), **({"runner_classes": sorted(RUNNER_OWNED_CLASSES[name])} if name in RUNNER_OWNED_CLASSES else {}), **({"original_start": True} if name in RUNNER_ORIGINAL_START else {}), **({"min_story": RUNNER_MIN_STORY[name]} if name in RUNNER_MIN_STORY else {}), "port_classes": sorted(classes), "port_scenes": sorted(scenes)}
+	return {"enabled": name in RUNNER_VALIDATED, **({"lift_classes": list(RUNNER_LIFT_CLASSES[name])} if name in RUNNER_LIFT_CLASSES else {}), **({"keep_local_flags": True} if name in RUNNER_KEEP_LOCAL_FLAGS else {}), **({"runner_classes": sorted(RUNNER_OWNED_CLASSES[name])} if name in RUNNER_OWNED_CLASSES else {}), **({"original_start": True} if name in RUNNER_ORIGINAL_START else {}), **({"min_story": RUNNER_MIN_STORY[name]} if name in RUNNER_MIN_STORY else {}), "port_classes": sorted(classes), "port_scenes": sorted(scenes)}
 def runner_stage(name):
 	"""Overlay, root file, model archive section (the first type-0x0C section after the root: the actor models the loader places in bank 0) and attach rule of a stage."""
 	source = ROOT / "build/disc-assets/DAT" / f"{name}.BIN"; data = source.read_bytes()

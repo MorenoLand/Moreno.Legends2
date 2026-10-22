@@ -80,7 +80,6 @@ var player_scene: Node
 var port_classes: Array = []
 ## Lifter blocks (attach rule lift_classes). Phases: 1 pickup requested, 2 carried, 3 thrown this tick, 4 dropped this tick.
 var lift_classes: Array = []
-var solid_classes: Array = []
 ## Life and zenny of the original's player struct as last exchanged with the port: the original collects dropped items by itself, the increases it makes go to the port's player.
 var pickup_life := 0
 var pickup_zenny := 0
@@ -123,6 +122,15 @@ var holding := 0
 var start_ticks := 0
 ## Blade Arm combo: the shot controller (special_blade.gd) sets the press and the tank here and reads the original handler's answer (control, animation frame, tank, done).
 var combo: Dictionary = {}
+const Playback := preload("res://scripts/cinematics/scene_playback.gd")
+const KEYFRAME_TICKS := 5
+const KEYFRAMES := 150
+var keyframes: Array = []
+var rewind_tick := -1
+var rewind_shown := -1
+var voice_id := -1
+var voice_start := 0
+var last_physics := 0
 
 static func _level_of(gameplay: Node, stage_name: String, area_index: int) -> Node3D:
 	return gameplay.room_stream.room_root(stage_name, area_index) if gameplay.streaming_rooms else gameplay.level
@@ -209,7 +217,6 @@ func _loaded(opened := true) -> void:
 	gameplay.player.hold_ended.connect(_hold_ended)
 	port_classes = manifest["attach"]["port_classes"]
 	lift_classes = manifest["attach"].get("lift_classes", [])
-	solid_classes = manifest["attach"].get("solid_classes", [])
 	barriers.load_stage(stage)
 	for scene in manifest["attach"]["port_scenes"]:
 		session.hle.bridge.blocked_scenes[int(scene)] = true
@@ -236,6 +243,7 @@ func _adopt_start() -> void:
 
 # A stage handover reparents the host while its session is still loading; only a host that is going away joins its threads.
 func _exit_tree() -> void:
+	Playback.end(self)
 	if is_queued_for_deletion():
 		if loader != null:
 			loader.wait_to_finish()
@@ -262,6 +270,7 @@ func _read_animations(directory: String, into: Dictionary, key_base := 0) -> voi
 
 ## The original queued a read of a pack (SLES 0x8001B2D8) and the session loaded its model archive over the sub-stage bank (entry bank 1, 0x8013C800) or over the stage's own bank (entry bank 0, ST1C02), so the port's model files and animation tables follow the replaced bank.
 func _bank_loaded(entry: Dictionary) -> void:
+	keyframes.clear()
 	if entry.has("vram"):
 		effects.vram = FileAccess.get_file_as_bytes(DIRECTORY + str(entry["vram"]))
 		effects.textures.clear()
@@ -359,21 +368,31 @@ func _physics_process(delta: float) -> void:
 		return
 	if not scene_mode and (bool(gameplay.dialogue_box.get("active")) and int(gameplay.event_script.active_window_state.get("window", 0)) != RADIO_WINDOW or not gameplay.player.is_physics_processing()):
 		return
+	if Playback.speed <= 0:
+		last_wall = 0  # paused, or rewinding (the playback controller steps back)
+		return
 	if OS.has_feature("nothreads"):
 		# A slow single-threaded frame gets fewer physics steps than real time; the original's clock is the vblank counter, so follow the wall clock (the voice plays in real time).
 		var now := Time.get_ticks_usec()
+		if Engine.get_physics_frames() - last_physics > 2: last_wall = 0  # not stepped for a while (paused)
 		delta = clampf(float(now - last_wall) / 1000000.0, 0.0, 0.5) if last_wall > 0 else delta
 		last_wall = now
-	elapsed += delta * NATIVE_HZ
+	last_physics = Engine.get_physics_frames()
+	elapsed += delta * NATIVE_HZ * float(Playback.speed)
 	if ticking:
 		elapsed = minf(elapsed, 2.0 if not OS.has_feature("nothreads") else 12.0)
 		return
-	var single := OS.has_feature("nothreads")
+	var single := OS.has_feature("nothreads"); var steps := 0
 	while elapsed >= 1.0 and not busy and not finished:
-		elapsed -= 1.0
+		var batch := mini(int(elapsed), mini(Playback.speed, 2 if single else Playback.speed)) if Playback.speed > 1 else 1  # fast forward: several original frames per port tick (two on the single thread)
+		elapsed -= float(batch)
 		ticking = true
-		await _tick()
+		await _tick(batch)
 		ticking = false
+		steps += 1
+		if Playback.speed > 1 and steps >= Playback.MAX_STEPS:
+			elapsed = minf(elapsed, 1.0)
+			break
 		if single:
 			elapsed = minf(elapsed, 12.0)
 			break
@@ -408,9 +427,9 @@ func _flush_ports() -> void:
 		_request_area(wanted)
 
 ## The original frame and the render phase run on a worker thread while the port keeps drawing; the port side only touches the emulated memory before and after it.
-func _frame(view: Array) -> void:
+func _frame(view: Array, batch := 1) -> void:
 	if OS.has_feature("nothreads"):
-		session.frame()
+		_frames(batch)
 		if not view.is_empty():
 			if elapsed < 1.0:
 				await get_tree().physics_frame
@@ -418,17 +437,25 @@ func _frame(view: Array) -> void:
 				_render(view)
 		return
 	job = Thread.new()
-	if job.start(_work.bind(view)) != OK:
+	if job.start(_work.bind(view, batch)) != OK:
 		job = null
-		_work(view)
+		_work(view, batch)
 		return
 	while job.is_alive() and is_inside_tree():
 		await get_tree().physics_frame
 	_join()
 
-func _work(view: Array) -> void:
-	session.frame()
+func _work(view: Array, batch := 1) -> void:
+	_frames(batch)
 	_render(view)
+
+## The original frame, then up to batch - 1 more while it asked nothing of the port (no message, sound, fade, request or end of the scene): the port's per-tick work would have found nothing to do between them.
+func _frames(batch: int) -> void:
+	session.frame()
+	for extra in batch - 1:
+		var machine: Machine = session.machine
+		if not session.hle.bridge.log.is_empty() or not session.hle.bridge.windows.is_empty() or machine.u8(SCENE_ACTIVE) == 0 or machine.u8(REQUEST) != 0 or machine.u8(Session.AREA_BYTE) != area or machine.u32(LOOP_STATE) == LOOP_TITLE or machine.u16(PAD_PRESSED) != 0: break
+		session.frame()
 
 ## The render phase of an original frame; without worker threads it runs a physics frame after the frame itself, so the two halves do not land in one spike.
 func _render(view: Array) -> void:
@@ -437,8 +464,9 @@ func _render(view: Array) -> void:
 	built_world = effects.build_world(drawn) if not view.is_empty() else []
 	strips = session.background() if not view.is_empty() else []
 
-func _tick() -> void:
+func _tick(batch := 1) -> void:
 	var machine: Machine = session.machine
+	if scene_mode and (keyframes.is_empty() or session.frame_count - int(keyframes.back()["frame_count"]) >= KEYFRAME_TICKS) and _quiet(): _keyframe()
 	_flush_ports()
 	if not scene_mode:
 		_sync_player_in()
@@ -463,7 +491,7 @@ func _tick() -> void:
 		if mode == FIELD_IDLE:
 			machine.put16(Session.GAME_BLOCK, FIELD_RUNNING)
 	var camera := _view_camera()
-	await _frame([camera.fov, get_viewport().get_visible_rect().size] if camera != null else [])
+	await _frame([camera.fov, get_viewport().get_visible_rect().size] if camera != null else [], batch if start_ticks == 0 else 1)
 	if not is_inside_tree() or finished:
 		return
 	machine.put16(PAD_PRESSED, 0)
@@ -952,6 +980,7 @@ func _sync_actors() -> void:
 	var live := {}
 	# The port only owns its classes outside scenes: a scene's actors (Bluecher, Barrel, Roll) are the original's own spawns and the port has no copy of them yet.
 	var in_scene := scene_mode or machine.u8(SCENE_ACTIVE) != 0
+	var bodies := session.solid_bodies()
 	for actor: int in session.actor_slots() + session.effect_slots():
 		var passive := actor >= Session.EFFECT_BASE
 		if not in_scene and port_classes.has(float(machine.u8(actor + 4))):
@@ -970,6 +999,9 @@ func _sync_actors() -> void:
 			if view == null:
 				continue
 			views[actor] = view
+		var body: Array = bodies.get(actor, [-1, -1])
+		view.body_kind = int(body[0])
+		view.body_param = int(body[1])
 		view.sync()
 	for actor in views.keys():
 		if not live.has(actor):
@@ -1029,8 +1061,6 @@ func _create_view(actor: int, key: int, passive: bool) -> Node3D:
 	view.passive = passive
 	if lift_classes.has(float(machine.u8(actor + 4))):
 		view.make_lift(self)
-	if solid_classes.has(float(machine.u8(actor + 4))):
-		view.make_solid()
 	return view
 
 func _drain_bridge() -> void:
@@ -1058,6 +1088,8 @@ func _sound(event: Array) -> void:
 		gameplay.audio.play_sound(int(event[1]))
 
 func _play_xa(id: int) -> void:
+	voice_id = id
+	voice_start = session.frame_count
 	if is_instance_valid(gameplay.voice):
 		gameplay.voice.volume_db = 0.0
 	gameplay.play_voice(stage, id)
@@ -1089,6 +1121,8 @@ func _bind_boss(actor: int, shift: int, color: int) -> void:
 
 func _begin_scene() -> void:
 	scene_mode = true
+	keyframes.clear()
+	Playback.begin(self)
 	gameplay.loading = true
 	gameplay.area_picker.disabled = true
 	gameplay.player.velocity = Vector3.ZERO
@@ -1106,6 +1140,8 @@ func _begin_scene() -> void:
 
 func _end_scene() -> void:
 	scene_mode = false
+	keyframes.clear()
+	Playback.end(self)
 	scene_grace = 3
 	player_control = -1
 	if player_scene != null:
@@ -1139,6 +1175,7 @@ func _apply_camera() -> void:
 
 func _change_area(runner_area: int) -> void:
 	busy = true
+	keyframes.clear()
 	session.apply_area_bank(runner_area)  # areas the original code enters itself (scene requests) still follow the sub-stage archive rule
 	var machine: Machine = session.machine
 	var scene_after := scene_mode
@@ -1175,6 +1212,7 @@ func _return_to_title() -> void:
 
 func _stage_request() -> void:
 	busy = true
+	keyframes.clear()
 	var machine: Machine = session.machine
 	var raw := [machine.s16(REQUEST + 0x10), machine.s16(REQUEST + 0x12), machine.s16(REQUEST + 0x14), machine.s16(REQUEST + 0x16) & 4095]
 	var route := {"destination_stage": "ST%02X" % machine.u8(REQUEST + 4), "destination_area": machine.u8(REQUEST + 5), "destination_transform_raw": raw, "destination_transform": {"position": [float(raw[0]) / 256.0, float(raw[1]) / 256.0, float(raw[2]) / 256.0], "yaw_raw": raw[3], "floor_height": int(raw[1]) == -1}, "native_transition_mode": 2, "native_entry_fade": machine.u8(REQUEST + 0x18), "native_exit_fade": machine.u8(REQUEST + 0x19)}
@@ -1191,3 +1229,78 @@ func _stage_request() -> void:
 	if scene_camera != null:
 		scene_camera.queue_free()
 	gameplay.stage_transition_requested.emit(route)
+
+# Playback (scene_playback.gd): a keyframe of the whole machine and of the port's mirror of it every KEYFRAME_TICKS ticks while nothing asynchronous is in flight (no message, fade, voice load or area change), the last 30 s. Rewinding restores the newest keyframe at or before the rewound tick and rebuilds the views, the player and the camera from it; the original code then runs on from there. An area change, a sub-stage bank load or a stage request ends the history.
+func playback_root() -> Node: return gameplay
+func playback_hz() -> float: return NATIVE_HZ
+func playback_ticks() -> int: return session.frame_count if session != null else 0
+func playback_voices() -> Array: return [gameplay.voice]
+func playback_rewindable() -> bool: return scene_mode and not ticking and _quiet()
+func playback_back(count: int) -> int:
+	if keyframes.is_empty(): return 0
+	if rewind_tick < 0 or session.frame_count != rewind_shown: rewind_tick = session.frame_count
+	var oldest := int(keyframes[0]["frame_count"])
+	rewind_tick = maxi(rewind_tick - count, oldest)
+	var index := keyframes.size() - 1
+	while index > 0 and int(keyframes[index]["frame_count"]) > rewind_tick: index -= 1
+	var frame: Dictionary = keyframes[index]
+	if int(frame["frame_count"]) != session.frame_count:
+		keyframes.resize(index + 1)
+		_restore_keyframe(frame)
+	rewind_shown = session.frame_count
+	return count if rewind_tick > oldest else 0
+## The voice of the restored tick starts where it would be by now.
+func playback_resync() -> void:
+	rewind_tick = -1
+	if voice_id < 0:
+		if is_instance_valid(gameplay.voice): gameplay.voice.stop()
+		return
+	var id := voice_id
+	await gameplay.play_voice(stage, id)
+	var voice: AudioStreamPlayer = gameplay.voice
+	if id != voice_id or not is_instance_valid(voice) or voice.stream == null: return
+	var position := float(session.frame_count - voice_start) / NATIVE_HZ
+	if position >= voice.stream.get_length(): voice.stop()
+	else: voice.seek(position)
+func _quiet() -> bool:
+	var bridge = session.hle.bridge
+	return not (busy or finished or opening) and bridge.windows.is_empty() and bridge.log.is_empty() and closing.is_empty() and not bool(gameplay.dialogue_box.get("active")) and gameplay.transition_overlay.is_idle() and not gameplay.voice_loading and requested_area < 0 and pending_area < 0 and arrival_hold == 0 and grab_view == null and start_ticks == 0 and pending_shots.is_empty()
+func _keyframe() -> void:
+	var context: Dictionary = gameplay.native_context; var values := {}
+	for key: String in ["native_save_byte14", "native_save_byte15"] + COUNTERS.keys(): values[key] = context.get(key, null)
+	var overlay = gameplay.transition_overlay
+	keyframes.append({"session": session.keyframe(), "frame_count": session.frame_count, "camera_state": camera_state.duplicate(), "flags_shadow": flags_shadow.duplicate(), "counter_shadow": counter_shadow.duplicate(), "placements": placement_states.duplicate(), "last_story": last_story, "last_committed": last_committed, "shake": shake, "pickup": [pickup_life, pickup_zenny], "context": values, "flags": (context.get("event_flags", {}) as Dictionary).duplicate(), "player": [gameplay.player.health, gameplay.player.zenny], "voice": [voice_id, voice_start], "area": area, "drawn": [built, built_world, strips], "covered": overlay.is_covered(), "additive": overlay.effect != null and bool(overlay.effect.get_shader_parameter("additive"))})
+	if keyframes.size() > KEYFRAMES: keyframes.pop_front()
+func _restore_keyframe(frame: Dictionary) -> void:
+	session.restore(frame["session"])
+	camera_state = frame["camera_state"].duplicate(); flags_shadow = frame["flags_shadow"].duplicate(); counter_shadow = frame["counter_shadow"].duplicate(); placement_states = frame["placements"].duplicate()
+	last_story = frame["last_story"]; last_committed = frame["last_committed"]; shake = frame["shake"]; pickup_life = frame["pickup"][0]; pickup_zenny = frame["pickup"][1]; voice_id = frame["voice"][0]; voice_start = frame["voice"][1]; area = frame["area"]
+	var context: Dictionary = gameplay.native_context
+	for key: String in frame["context"]:
+		if frame["context"][key] == null: context.erase(key)
+		else: context[key] = frame["context"][key]
+	context["event_flags"] = frame["flags"].duplicate()
+	gameplay.player.health = frame["player"][0]; gameplay.player.zenny = frame["player"][1]
+	built = frame["drawn"][0]; built_world = frame["drawn"][1]; strips = frame["drawn"][2]
+	start_ticks = 0; interact_pending = false; elapsed = 0.0; last_wall = 0
+	for view in views.values():
+		if is_instance_valid(view): view.control = -1
+	_sync_actors()
+	barriers.sync(session.machine, level, area, context)
+	_sync_player_out()
+	player_control = -1
+	_sync_player_pose()
+	if player_scene != null:
+		player_scene.control = -1
+		player_scene.frames = [-1, -1]
+		player_scene.sync(session.machine)
+	else:
+		gameplay.player.player_model.visible = session.machine.u8(PLAYER) & 2 != 0
+	_apply_camera()
+	var camera := _view_camera()
+	if camera != null:
+		effects.show_batches(built)
+		effects.show_world(built_world, level.global_transform)
+		backdrop.show_bands(strips, session.gte_projection(), camera.fov, get_viewport().get_visible_rect().size)
+	if bool(frame["covered"]): gameplay.transition_overlay.hold(bool(frame["additive"]))
+	elif gameplay.transition_overlay.visible: gameplay.transition_overlay.clear()

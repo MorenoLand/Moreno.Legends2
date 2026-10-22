@@ -34,6 +34,10 @@ const POOL_SLOTS := 24
 const EFFECT_BASE := 0x80098B08
 const EFFECT_STRIDE := 0xCC
 const EFFECT_SLOTS := 128
+## The body list GAME 0x800B8AA0 appends to (12 byte entries: actor, kind s16, parameter s16, extra) and the hit pass 0x800B8B0C consumes; the entries stay in memory after the pass, so the frame starts them zeroed and the actors that registered a body this frame are the nonzero ones.
+const BODY_LIST := 0x80096950
+const BODY_SLOTS := 64
+const BODY_BYTES := 12
 ## The disc read queue of the original: SLES 0x8001B2D8 appends a 16 byte command (type 1, file id at +2) and advances this pointer. The runner has no drive, so reads of the stage's sub-stage packs ("bank_loads" of the manifest) are served after each frame.
 const READ_QUEUE := 0x80078D64
 const NEW_GAME := [[0x8003D1EC, 1], [0x800B8A7C], [0x800390C4], [0x800160EC], [0x800AE328, 0], [0x800C0284, 0], [0x800C256C, 0], [0x800BB0F0, 0], [0x800D97B4, 1], [0x800C35B0, 0]]
@@ -113,6 +117,8 @@ func apply_area_bank(area: int) -> void:
 func begin_frame() -> void:
 	machine.gte.depths = {}
 	machine.call_function(0x800390C4)
+	for word in BODY_SLOTS * (BODY_BYTES >> 2):
+		machine.put32(BODY_LIST + word * 4, 0)
 	var parity := (machine.u8(0x1F800004) ^ 1) & 1
 	machine.put8(0x1F800004, parity)
 	machine.put16(0x1F800006, machine.u16(0x1F800006) + 1)
@@ -316,6 +322,17 @@ func faults() -> Array:
 	return result
 
 
+## The solid bodies the original registered this frame: actor address to [kind, parameter] (GAME 0x800B8B0C sends kinds 0 and 2 to 0x800B927C and 1 and 3 to 0x800B8CAC, which both push the target out of the body's box list).
+func solid_bodies() -> Dictionary:
+	var result := {}
+	for slot in BODY_SLOTS:
+		var entry := BODY_LIST + slot * BODY_BYTES
+		var actor := machine.u32(entry)
+		if actor != 0:
+			result[actor] = [machine.s16(entry + 4), machine.s16(entry + 6)]
+	return result
+
+
 func actor_slots() -> Array:
 	var result := []
 	for slot in POOL_SLOTS:
@@ -333,3 +350,81 @@ func effect_slots() -> Array:
 		if machine.u8(object) & machine.u8(object + 1) & 1 == 1:
 			result.append(object)
 	return result
+
+
+## Playback keyframes (scene_playback.gd): the machine as the 4 KB pages that differ from the first keyframe's image (found by 64 KB blocks), plus the registers, the GTE and the engine services' counters. Only two windows of the array are ever written, the 2 MB of RAM and the scratchpad with the I/O registers behind it (the 0x9FFFFF mask folds every address into them); restoring a keyframe and running the same frames again replays the original run.
+const KEY_BLOCK := 65536
+const KEY_PAGE := 4096
+const KEY_WINDOWS := [[0, 0x200000], [0x800000, 0x804000]]
+var key_base: Array = []
+var key_last := {}
+
+
+func keyframe() -> Dictionary:
+	var ram := machine.ram
+	if key_base.is_empty():
+		for window: Array in KEY_WINDOWS:
+			key_base.append(ram.slice(window[0], window[1]))
+	var pages := {}
+	for index in KEY_WINDOWS.size():
+		var window: Array = KEY_WINDOWS[index]
+		var base: PackedByteArray = key_base[index]
+		for block in range(window[0], window[1], KEY_BLOCK):
+			var end := mini(block + KEY_BLOCK, window[1])
+			if ram.slice(block, end) == base.slice(block - window[0], end - window[0]):
+				continue
+			for page in range(block, end, KEY_PAGE):
+				var piece := ram.slice(page, page + KEY_PAGE)
+				if piece != base.slice(page - window[0], page - window[0] + KEY_PAGE):
+					pages[page] = key_last[page] if key_last.has(page) and key_last[page] == piece else piece  # a page that did not change since the last keyframe is shared with it
+	key_last = pages
+	var bridge = hle.bridge
+	return {"pages": pages, "R": machine.R.duplicate(), "d": machine.gte.d.duplicate(), "c": machine.gte.c.duplicate(), "frame": hle.frame, "fades": hle.fades.duplicate(true), "rand": hle.rand_seed,
+		"bridge": [bridge.frame, bridge.windows.duplicate(true), bridge.transition_until, bridge.xa_active, bridge.camera_override.duplicate(), bridge.camera_last.duplicate()],
+		"frame_count": frame_count, "read_seen": read_seen, "area_bank": area_bank, "loaded_module": loaded_module}
+
+
+func restore(state: Dictionary) -> void:
+	var offsets: Array = state["pages"].keys()
+	offsets.sort()
+	var image := PackedByteArray()
+	for index in KEY_WINDOWS.size():
+		var window: Array = KEY_WINDOWS[index]
+		var base: PackedByteArray = key_base[index]
+		var at: int = window[0]
+		var part := PackedByteArray()
+		for page: int in offsets:
+			if page < window[0] or page >= window[1]:
+				continue
+			part.append_array(base.slice(at - window[0], page - window[0]))
+			part.append_array(state["pages"][page])
+			at = page + KEY_PAGE
+		part.append_array(base.slice(at - window[0]))
+		image.resize(window[0])
+		image.append_array(part)
+	image.resize(machine.ram.size())
+	machine.ram = image
+	machine._bind()
+	for index in machine.R.size():
+		machine.R[index] = state["R"][index]
+	for index in machine.gte.d.size():
+		machine.gte.d[index] = state["d"][index]
+		machine.gte.c[index] = state["c"][index]
+	machine.gte.depths = {}
+	hle.frame = state["frame"]
+	hle.fades = state["fades"].duplicate(true)
+	hle.rand_seed = state["rand"]
+	var bridge = hle.bridge
+	var saved: Array = state["bridge"]
+	bridge.frame = saved[0]
+	bridge.windows = saved[1].duplicate(true)
+	bridge.transition_until = saved[2]
+	bridge.xa_active = saved[3]
+	bridge.camera_override = saved[4].duplicate()
+	bridge.camera_last = saved[5].duplicate()
+	bridge.log.clear()
+	bridge.segments.clear()
+	frame_count = state["frame_count"]
+	read_seen = state["read_seen"]
+	area_bank = state["area_bank"]
+	loaded_module = state["loaded_module"]
