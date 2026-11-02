@@ -2044,16 +2044,17 @@ RUNNER_DIR = ROOT / "assets" / "runner"
 RUNNER_HLE = ROOT / "scripts" / "runner"
 RUNNER_OVERLAY_BASE, RUNNER_GAME_SIZE, RUNNER_RAM_SIZE = 0x800E7000, 0x3A000, 0x200000
 RUNNER_ENGINE_ROOTS = (0x8003C894, 0x8003CAD0, 0x8003CE00, 0x8003CBD0, 0x8003CA14, 0x8003CF08, 0x8003CCE8, 0x8003D0E8, 0x8003D010, 0x800C0818, 0x800C05E0, 0x8003D1EC, 0x800B8A7C, 0x800390C4, 0x800160EC, 0x800AE328, 0x800C0284, 0x800C256C, 0x800BB0F0, 0x800D97B4, 0x800C35B0, 0x800BA374, 0x800BA48C, 0x800B0244, 0x800C042C, 0x800BDBDC, 0x800C3C84, 0x8001D858, 0x800AEB30)
-RUNNER_STAGES = {name: {} for name in ("ST09", "ST0E", "ST0F", "ST11", "ST12", "ST13", "ST14", "ST15", "ST16", "ST17", "ST18", "ST19", "ST1C", "ST1D", "ST24", "ST25", "ST27", "ST28", "ST2B", "ST2E", "ST2F", "ST30", "ST33", "ST35", "ST36", "ST37", "ST38", "ST39", "ST3C", "ST3E", "ST40", "ST43", "ST44", "ST45", "ST46", "ST4A", "ST4B", "ST4C", "ST41", "ST42", "ST4E", "ST4F", "ST50", "ST51", "ST55", "ST58", "ST5C")}
+RUNNER_STAGES = {name: {} for name in ("ST09", "ST0A", "ST0C", "ST0D", "ST1A", "ST1B", "ST21", "ST22", "ST23", "ST47", "ST53", "ST0E", "ST0F", "ST11", "ST12", "ST13", "ST14", "ST15", "ST16", "ST17", "ST18", "ST19", "ST1C", "ST1D", "ST1F", "ST24", "ST25", "ST26", "ST27", "ST28", "ST2B", "ST2D", "ST2E", "ST2F", "ST30", "ST31", "ST33", "ST34", "ST35", "ST36", "ST37", "ST38", "ST39", "ST3C", "ST3E", "ST40", "ST43", "ST44", "ST45", "ST46", "ST48", "ST4A", "ST4B", "ST4C", "ST4D", "ST41", "ST42", "ST4E", "ST4F", "ST50", "ST51", "ST55", "ST58", "ST59", "ST5A", "ST5B", "ST5C", "ST52", "ST54", "ST56", "ST04", "ST05", "ST06", "ST07", "ST57", "ST20", "ST29", "ST2A", "ST2C", "ST32", "ST3B")}
+RUNNER_NO_MODELS = ("ST57",)
 RUNNER_MODULE_BASE, RUNNER_MODULES = 0x8010A000, tuple(f"PL00R{number:02X}" for number in range(1, 0x11))
 RUNNER_MODEL_BANK, RUNNER_ROOT_BANK = 0x80124800, 0x80154800
 RUNNER_OWNED_CLASSES = {"ST0F": {5, 7, 8, 19, 21, 27, 85, 96, 111}, "ST4A": {0, 21}}  # classes the port has records for (ST4A: Roll, the tutorial NPC, and the treasure chest of area 4) that the original code runs itself: the runner keeps them (attach rule "runner_classes") and the port spawns none
-RUNNER_OWNED_SCENES = {"ST0F": {0x50, 0x51, 0x52, 0x53, 0x54}}  # scenes the port has contracts for (the mine quest: arrival, pre-boss, boss intro and defeat, refractor) that the original handlers start themselves
+RUNNER_OWNED_SCENES = {"ST0F": {0x50, 0x51, 0x52, 0x53, 0x54}, "ST0A": {0x4D}, "ST23": {0x57}, "ST47": {0x12}}  # scenes the port has contracts for that the original handlers start themselves (ST0F: the mine quest arrival, pre-boss, boss intro and defeat, refractor; ST0A 0x4D, ST23 0x57, ST47 0x12: a port-played scene never runs in a runner stage because the runner blocks the id and the port drops the spawn-set side effects that would start it)
 RUNNER_ORIGINAL_START = ("ST4A", "ST55")  # menu starts (no arrival transform) keep the player where the original stage set-up puts him: the tutorial and the license test begin at their own start points
 RUNNER_LIFT_CLASSES = {"ST4A": (0x25,)}  # class 0x25 is the liftable block of the tutorial's Lifter lesson (area 3 corridor, effect pool objects: idle state 1, carried 2, thrown 3, broken 4): the port's Lifter picks it up and throws it through the original block code
 RUNNER_KEEP_LOCAL_FLAGS = ("ST4A", "ST55")  # in-stage area changes of the original (request type 0xFF, GAME 0x800BA48C(-1)) keep the area-local flags 0x680-0x6DF and 0x710-0x74F (only the stage load, 0x800BA374 -> 0x800C02D0, clears them): the port does not clear them on its room loads here, the tutorial and test progress live in them
-RUNNER_MIN_STORY = {"ST39": 1, "ST09": 16, "ST3C": 12}  # ST39: the new-game opening (story byte 0) stays on the port scene contract; ST09 and ST3C: the story bytes whose area handlers start scenes 0x72 and 0x5D (scripted_actors dispatch rows 16 and 12), earlier story keeps the port content
-RUNNER_VALIDATED = ("ST09", "ST0E", "ST0F", "ST12", "ST13", "ST14", "ST15", "ST16", "ST17", "ST18", "ST19", "ST1C", "ST1D", "ST24", "ST25", "ST27", "ST28", "ST2E", "ST2F", "ST33", "ST35", "ST36", "ST37", "ST38", "ST39", "ST3C", "ST3E", "ST40", "ST41", "ST42", "ST43", "ST45", "ST46", "ST4A", "ST4C", "ST4E", "ST4F", "ST50", "ST51", "ST55", "ST58")
+RUNNER_MIN_STORY = {"ST39": 1, "ST3C": 12}  # ST39: the new-game opening (story byte 0) stays on the port scene contract; ST3C: the story byte whose area handler starts scene 0x5D (scripted_actors dispatch row 12), earlier story keeps the port content (ST09 had a gate at 16 for scene 0x72; it runs at every story byte now)
+RUNNER_VALIDATED = ("ST09", "ST0A", "ST0C", "ST0D", "ST1A", "ST1B", "ST21", "ST22", "ST23", "ST47", "ST53", "ST0E", "ST0F", "ST12", "ST13", "ST14", "ST15", "ST16", "ST17", "ST18", "ST19", "ST1C", "ST1D", "ST1F", "ST24", "ST25", "ST26", "ST27", "ST28", "ST2D", "ST2E", "ST2F", "ST30", "ST31", "ST33", "ST34", "ST35", "ST36", "ST37", "ST38", "ST39", "ST3C", "ST3E", "ST40", "ST41", "ST42", "ST43", "ST44", "ST45", "ST46", "ST48", "ST4A", "ST4B", "ST4C", "ST4D", "ST4E", "ST4F", "ST50", "ST51", "ST55", "ST58", "ST59", "ST5A", "ST5B", "ST5C", "ST52", "ST54", "ST56", "ST57", "ST20", "ST29", "ST2A", "ST2B", "ST2C", "ST32", "ST3B")
 def runner_attach_rule(name):
 	"""Whether the runner attaches (only stages whose headless run is clean), and what the port already owns in a stage: actor classes from its scripted, NPC, mine and dungeon-enemy tables and the scene contracts it plays itself; the runner kills those actors, hides door models and does not start those scenes."""
 	import world
@@ -2083,6 +2084,7 @@ def runner_stage(name):
 			try: disc.decompress_section(data, offset)
 			except (ValueError, IndexError): continue
 			return {"overlay": f"{name}T.BIN", "source": f"{name}.BIN", "models": offset, **RUNNER_STAGES[name]}
+	if name in RUNNER_NO_MODELS: return {"overlay": f"{name}T.BIN", "source": f"{name}.BIN", "models": None, **RUNNER_STAGES[name]}  # the credits stage spawns no model actors: only the root section is loaded
 	raise ValueError(f"{name} has no model archive section")
 class MipsImage:
 	"""Little-endian code and data segments (base, bytes, name) laid out at their PlayStation RAM addresses."""
@@ -2407,17 +2409,19 @@ def runner_closure(recompiler, roots):
 		seen[entry] = function; work.extend(call for call in function.calls if call not in seen)
 	return seen, hardware, errors
 RUNNER_SUBSTAGE_BANK = 0x8013C800
-RUNNER_SUBSTAGE_BANKS = {"ST0F": {"pack": "ST0F01.BIN", "offset": 0}, "ST12": {"pack": "ST1201.BIN", "offset": 0x134C}, "ST13": {"pack": "ST1301.BIN", "section": 0x11000, "offset": 0x2530}, "ST14": {"pack": "ST1401.BIN", "offset": 0x1980}, "ST1C": {"pack": "ST1C01.BIN", "offset": 0xFAC, "loads": {0xA3: ("ST1C01.BIN", 0xFAC, 1), 0xA4: ("ST1C02.BIN", 0, 0)}}}  # sub-stage 1 of the Manda ruins: the final zone's actor bank (classes 0x24, 0x2B, 0x3E); ST1C01: the actor bank of the post-boss scene 0x13 (classes 0x5D, 0x5A, 0x2F, 0x59, 0x68: the offset skips the player-clip block it shares with the stage archive)
+RUNNER_SUBSTAGE_BANKS = {"ST0F": {"pack": "ST0F01.BIN", "offset": 0}, "ST12": {"pack": "ST1201.BIN", "offset": 0x134C}, "ST13": {"pack": "ST1301.BIN", "section": 0x11000, "offset": 0x2530}, "ST14": {"pack": "ST1401.BIN", "offset": 0x1980}, "ST1C": {"pack": "ST1C01.BIN", "offset": 0xFAC, "loads": {0xA3: ("ST1C01.BIN", 0xFAC, 1), 0xA4: ("ST1C02.BIN", 0, 0)}}, "ST3C": {"loads": {0x105: ("ST3C02.BIN", 0x7AC, 1)}}}  # sub-stage 1 of the Manda ruins: the final zone's actor bank (classes 0x24, 0x2B, 0x3E); ST1C01: the actor bank of the post-boss scene 0x13 (classes 0x5D, 0x5A, 0x2F, 0x59, 0x68: the offset skips the player-clip block it shares with the stage archive)
 def runner_substage_bank(name, data=False):
 	"""The actor model bank of a stage's sub-stage pack (ST<nn>01.BIN section 0, an uncompressed type-10 section: the bank table sits `offset` bytes after the 0x30 byte header), which the original area set-up loads at 0x8013C800 and points the model bank pointer (scratch 0x1F800074) at; the runner preloads it there."""
 	rule = RUNNER_SUBSTAGE_BANKS.get(name)
 	if not rule: return {}
-	pack = (ROOT / "build/disc-assets/DAT" / rule["pack"]).read_bytes(); section = rule.get("section", 0)
-	if section: bank = disc.decompress_section(pack, section)[0][rule["offset"]:]  # a compressed pack section (ST1301)
-	else: size = struct.unpack_from("<I", pack, 4)[0]; bank = pack[0x30 + rule["offset"]:0x30 + size]
-	if RUNNER_SUBSTAGE_BANK + len(bank) > RUNNER_ROOT_BANK: raise ValueError(f"{name} sub-stage bank overflows its loader bank")
-	result = {"bank1": {"address": RUNNER_SUBSTAGE_BANK, "size": len(bank), "file": f"{name}.bank1.bin", "models_directory": rule["pack"][:-4] + f"_{section:05X}"}}
-	if data: result["bank1_data"] = bank
+	result = {}
+	if "pack" in rule:  # a rule without a pack only lists disc reads ("loads")
+		pack = (ROOT / "build/disc-assets/DAT" / rule["pack"]).read_bytes(); section = rule.get("section", 0)
+		if section: bank = disc.decompress_section(pack, section)[0][rule["offset"]:]  # a compressed pack section (ST1301)
+		else: size = struct.unpack_from("<I", pack, 4)[0]; bank = pack[0x30 + rule["offset"]:0x30 + size]
+		if RUNNER_SUBSTAGE_BANK + len(bank) > RUNNER_ROOT_BANK: raise ValueError(f"{name} sub-stage bank overflows its loader bank")
+		result = {"bank1": {"address": RUNNER_SUBSTAGE_BANK, "size": len(bank), "file": f"{name}.bank1.bin", "models_directory": rule["pack"][:-4] + f"_{section:05X}"}}
+		if data: result["bank1_data"] = bank
 	if rule.get("loads"):  # disc reads the original queues (SLES 0x8001B2D8, file id at command +2): ST1C scene 0x13 asks for file 0xA3 (ST1C01) at tick 2462 and 0xA4 (ST1C02) at tick 7444. Bank 1 is the sub-stage bank at 0x8013C800 (scratch parity 1); ST1C02 is a type-10 archive without the player-clip prefix, 12 models (it adds class 0x1D, the door guards) that fits the 0x18000 bytes of bank 0, which it replaces (its textures also upload the palette rows 505/506/508 of areas 3 and 4)
 		loads = {}
 		for file_id, (pack_name, offset, bank) in rule["loads"].items():
@@ -2440,9 +2444,9 @@ def runner_area_banks(name, data=False):
 	return result
 def runner_stage_blobs(name, image, data=False):
 	"""Decompressed stage root and model archive at the addresses the original loader fills for bank 0 (SLES 0x80026770 and 0x80023040 then publish them through scratch 0x1F800080 and 0x1F800074)."""
-	source = (ROOT / "build/disc-assets/DAT" / runner_stage(name)["source"]).read_bytes(); root = disc.decompress_section(source, 0)[0]; models = disc.decompress_section(source, runner_stage(name)["models"])[0]
+	source = (ROOT / "build/disc-assets/DAT" / runner_stage(name)["source"]).read_bytes(); root = disc.decompress_section(source, 0)[0]; models = disc.decompress_section(source, runner_stage(name)["models"])[0] if runner_stage(name)["models"] is not None else b""
 	if RUNNER_MODEL_BANK + len(models) > RUNNER_ROOT_BANK or RUNNER_ROOT_BANK + len(root) > 0x8017E000: raise ValueError(f"{name} root or model archive overflows its loader bank")
-	result = {"root": {"address": RUNNER_ROOT_BANK, "size": len(root), "file": f"{name}.root.bin"}, "models": {"address": RUNNER_MODEL_BANK, "size": len(models), "file": f"{name}.models.bin"}}
+	result = {"root": {"address": RUNNER_ROOT_BANK, "size": len(root), "file": f"{name}.root.bin"}, **({"models": {"address": RUNNER_MODEL_BANK, "size": len(models), "file": f"{name}.models.bin"}} if models else {})}
 	if data: result.update(root_data=root, models_data=models)
 	return result
 def runner_vram(name):
@@ -2470,7 +2474,7 @@ def export_runner(stages=None, output_dir=None, trace=False):
 		emitter = MipsEmitter(image, unit_of, hle, trace); overlay = [function for function in seen.values() if function and unit_of(function.entry) == "ovl"]; overlays[name] = (emitter, overlay)
 		for function in seen.values():
 			if function and unit_of(function.entry) == "engine" and function.entry not in engine: engine[function.entry] = (emitter, function)
-		manifest["stages"][name] = {"unit": f"{name}.gd", "image": f"{name}.bin", "base": RUNNER_OVERLAY_BASE, "functions": len(overlay), "code_end": end, "vram": f"{name}.vram.bin", "models_directory": f"{name}_{runner_stage(name)['models']:05X}", "attach": runner_attach_rule(name), **runner_stage_blobs(name, image), **runner_substage_bank(name), **runner_area_banks(name)}
+		manifest["stages"][name] = {"unit": f"{name}.gd", "image": f"{name}.bin", "base": RUNNER_OVERLAY_BASE, "functions": len(overlay), "code_end": end, "vram": f"{name}.vram.bin", "models_directory": f"{name}_{runner_stage(name)['models']:05X}" if runner_stage(name)["models"] is not None else f"{name}_none", "attach": runner_attach_rule(name), **runner_stage_blobs(name, image), **runner_substage_bank(name), **runner_area_banks(name)}
 	for name in modules:
 		image = MipsImage(module=name); recompiler = MipsRecompiler(image); entries, end = runner_overlay_entries(recompiler)
 		seen, found, failed = runner_closure(recompiler, entries + list(RUNNER_ENGINE_ROOTS) + runner_engine_pointers(image) + sorted(hle)); hardware.update(found); errors += failed
@@ -2493,9 +2497,11 @@ def export_runner(stages=None, output_dir=None, trace=False):
 	for name in names:
 		image = MipsImage(runner_stage(name)["overlay"]); write_output(output / f"{name}.bin", next(segment[1] for segment in image.segments if segment[2] == "OVL"))
 		blobs = runner_stage_blobs(name, image, True)
-		for kind in ("root", "models"): write_output(output / f"{name}.{kind}.bin", blobs.pop(kind + "_data"))
+		for kind in ("root", "models"):
+			if blobs.get(kind): write_output(output / f"{name}.{kind}.bin", blobs.pop(kind + "_data"))
 		if name in RUNNER_SUBSTAGE_BANKS:
-			banks = runner_substage_bank(name, True); write_output(output / f"{name}.bank1.bin", banks["bank1_data"])
+			banks = runner_substage_bank(name, True)
+			if "bank1_data" in banks: write_output(output / f"{name}.bank1.bin", banks["bank1_data"])
 			for file_id, blob in banks.get("bank_loads_data", {}).items(): write_output(output / f"{name}.bank_{file_id:02x}.bin", blob)
 			loaded = bytearray(runner_vram(name))  # the textures each queued pack uploads (SLES 0x8001B2D8 reads) are applied cumulatively, in load order
 			for file_id, (pack_name, _, _) in RUNNER_SUBSTAGE_BANKS[name].get("loads", {}).items():

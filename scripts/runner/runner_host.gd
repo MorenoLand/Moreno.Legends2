@@ -47,6 +47,13 @@ const NATIVE_HZ := 25.0
 const CAMERA_DISTANCE := 1024
 const DOORS := [0x161, 0x261, 0x361]
 const RADIO_WINDOW := 4
+## Stages whose scenes keep their context across a stage request to the same stage (ST54: scene 0x6F steps its context byte +4 per area, GAME 0x800C0B78 only clears it when the scene starts): the original code reloads the area itself (request states 2 and 3, SLES 0x8001B2D8 reads served by the session) instead of the port starting a new session.
+const SELF_RELOAD := ["ST54"]
+## The area a self-reloading stage has entered: its request states 2 and 3 never write the game block's area byte (it stays 0 in ST54), the destination area stays in the request block (+5) and the scene reads it.
+var reload_area := -1
+## The credits (ST57 scene 0x6E, handler 0x800E7298): state 1 (0x800E769C) waits until the word at 0x8019E20C, a field of the sound/stream driver block at 0x8019E200 that SLES 0x8001C128 ticks and that the runner does not run, reads 10, and the page timer (state 2, 0x800E784C) compares it against page times spaced 12 to 13 apart (whose fades last 30 ticks). The host counts whole seconds of the scene clock into it from the start; that the word is elapsed seconds of the credits stream is inferred from the page spacing, not traced to the driver.
+const CREDITS_STAGE := "ST57"
+const STREAM_CLOCK := 0x8019E20C
 const STORY_BYTE := 0x8009C7FD
 const BANK_POINTER := 0x1F800074
 ## The map's placement table (4 + 8 bytes per placement; byte +3 low bits are the placement state GAME 0x800C010C writes and 0x800C00D4 reads).
@@ -485,6 +492,8 @@ func _tick(batch := 1) -> void:
 	_fire_pending()
 	_examine()
 	var mode := machine.u16(Session.GAME_BLOCK)
+	if stage == CREDITS_STAGE:
+		machine.put32(STREAM_CLOCK, session.frame_count / int(NATIVE_HZ))
 	if start_ticks > 0:
 		start_ticks -= 1
 		machine.put16(PAD_PRESSED, START_MASK)
@@ -539,13 +548,15 @@ func _tick(batch := 1) -> void:
 		else:
 			gameplay.player.player_model.visible = machine.u8(PLAYER) & 2 != 0  # the struct's render flag, as in runner_player_scene.gd
 		_apply_camera()
-	var runner_area: int = machine.u8(Session.AREA_BYTE)
+	if _reloads_itself(machine) and machine.u8(REQUEST) == 3:
+		reload_area = machine.u8(REQUEST + 5)
+	var runner_area: int = reload_area if reload_area >= 0 else machine.u8(Session.AREA_BYTE)
 	if pending_area >= 0:
 		if runner_area == pending_area:
 			pending_area = -1
 	elif runner_area != area and not busy:
 		_change_area(runner_area)
-	elif machine.u8(REQUEST) == 2 and not busy:
+	elif machine.u8(REQUEST) == 2 and not busy and not _reloads_itself(machine):
 		_stage_request()
 	elif machine.u32(LOOP_STATE) == LOOP_TITLE and not busy:
 		_return_to_title()
@@ -1019,6 +1030,8 @@ func bank_address(sub := false) -> int:
 
 ## The model an object's mesh pointer belongs to: its index in the stage's table, plus SUB_KEY when the pointer lies in the sub-stage bank (original code addresses that bank directly, whichever bank the model pointer scratch word names), -1 when it is no model.
 func _model_index(actor: int) -> int:
+	if not session.manifest["stages"][stage].has("models"):
+		return -1  # the credits stage has no model archive
 	var machine: Machine = session.machine
 	var mesh: int = machine.u32(actor + View.MESH)
 	var header: int = machine.u32(actor + View.HEADER) if actor >= Session.EFFECT_BASE else 0  # the model header an effect object draws (GAME 0x80025540 reads LODs from +0xA0..+0xA8 of it)
@@ -1209,6 +1222,9 @@ func _return_to_title() -> void:
 	while not gameplay.transition_overlay.is_idle():
 		await get_tree().physics_frame
 	gameplay.title_requested.emit()
+
+func _reloads_itself(machine: Machine) -> bool:
+	return stage in SELF_RELOAD and machine.u8(REQUEST + 4) == ("0x" + stage.substr(2)).hex_to_int()
 
 func _stage_request() -> void:
 	busy = true

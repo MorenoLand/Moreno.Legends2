@@ -49,7 +49,7 @@ var manifest := {}
 var frame_count := 0
 var directory := DIRECTORY
 var loaded_module := ""
-var read_seen := 0
+var read_seen := -1  # the queue starts at address 0 when the stage set-up has not placed a buffer, so 0 is a valid position
 var area_bank: Dictionary = {}
 
 
@@ -140,7 +140,7 @@ func frame() -> void:
 
 func _serve_reads() -> void:
 	var head := machine.u32(READ_QUEUE)
-	if read_seen == 0 or head < read_seen:
+	if read_seen < 0 or head < read_seen:
 		read_seen = head
 	var loads: Dictionary = manifest["stages"][stage].get("bank_loads", {})
 	while read_seen < head:

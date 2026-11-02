@@ -18,10 +18,12 @@ Flags: NOLOAD session failed to start; HANG load over 90 s; CRASH process died; 
 - `native_vram_animation.gd`: the per-tick VRAM copy and CLUT repaint ran per pixel with `set_pixel`; town areas with animated textures (ST1F, ST22, ST23, ST20) cost 70 ms per 25 Hz tick and held every frame over 50 ms. Row-wise copies, a cached 15-bit to RGBA table, per-patch palettes and a single `blit_rect` per patch bring the tick to 13 ms; frame time in ST1F area 0 drops from 45 ms to 17 ms.
 - `gameplay._find_spawn`: a free start (area picker, location load) now uses the arrival transform of a route into the area when one lands on floor, then the 11x11 ray grid, then a 47x47 grid, then any route arrival including those from other stages' `doors.json`. This fixes ST2D:5 (the grid picked a point that was not the room floor), ST2E:9, ST2F:4, ST2F:8, ST35:0, ST35:2, ST36:1, ST36:13, ST37:4, ST37:6 and ST37:15.
 
+- Runner re-check (ST35-ST38, ST40-ST45, ST4B, ST4C, ST4D, ST58, ST5C; byte14 0, 300 physics frames, `_start_session`): 136 areas started (every area of those stages), none raised an error, none reported unresolved code, ST35:2, ST36:13, ST37:15 and ST40:1 included. ST4B, ST4D, ST44 and ST5C attach the runner since this check (`docs/progression.md`, "Nino ruins, Elysium, Mother Zone...").
+
 ## Open
 
 - ST4F:14 ("Area 14") is a 2 m stub with one quad and no route into it; it cannot be started without a door and is not a playable room.
-- Unsupported native scenes requested by GAME.BIN: ST09 area 0 (scene 0x72), ST3C area 2 (0x5D), ST40 area 1 (0x6A). No `scene_XX.json` is exported for them; this needs the cinematics scene emulation (story flow).
+- Unsupported native scenes requested by GAME.BIN: none for ST09 any more: ST09 area 0 scene 0x72 is played by the runner from story byte 16 (ST09 now runs the runner at bytes 1-15 too and loads cleanly at the nine sweep bytes; see docs/progression.md, Yosyonke). ST3C area 2 (0x5D) now runs on the runner from byte14 12 (see docs/progression.md, Kimotoma City): the scene plays to its end, but the flag that advances the story (0x6F) is not set afterwards.
 - ST1D area 2 at byte14 20 hit an unresolved MIPS target (0x00000000, ra 0x800E7770) once; a rerun was clean.
 - ST01 (world map) has no areas and is not startable through the area path.
 - The ST08:0 679 ms first-frame spike and the ST37:4 74 ms spike came from three parallel cold-start processes and do not reproduce alone (about 32 ms).
@@ -30,10 +32,8 @@ Flags: NOLOAD session failed to start; HANG load over 90 s; CRASH process died; 
 
 | Areas | Message |
 |---|---|
-| ST35:2, ST36:13, ST37:15, ST4F:14 | ERROR: Flutter room has no clear walkable spawn / [0] _select_stream_room (res://scripts/world/core/gameplay.gd:292) |
-| ST09:0 | ERROR: Unsupported native scene ST09:72 requested by GAME.BIN 0x800c0b0c / [0] _run_native_scene_requests (res://scripts/world/core/gameplay.gd:393) |
+| ST4F:14 | ERROR: Flutter room has no clear walkable spawn / [0] _select_stream_room (res://scripts/world/core/gameplay.gd:292) |
 | ST3C:2 | ERROR: Unsupported native scene ST3C:5D requested by GAME.BIN 0x800c0b0c / [0] _run_native_scene_requests (res://scripts/world/core/gameplay.gd:393) |
-| ST40:1 | ERROR: Unsupported native scene ST40:6A requested by GAME.BIN 0x800c0b0c / [0] _run_native_scene_requests (res://scripts/world/core/gameplay.gd:393) |
 
 ## Per stage
 
@@ -91,9 +91,9 @@ Flags: NOLOAD session failed to start; HANG load over 90 s; CRASH process died; 
 | ST32 | Pokte Mayor's Home | 1 | 9 | 0,1,2,3,5,8,12,16,20 | WALKFALL: a0 (9 runs) |
 | ST33 | Saul Kada Ruins | 1 | 4 | 0,1,2,3 | OK |
 | ST34 | Saul Kada Ruins | 6 | 24 | 0,1,2,3 | WALKFALL: a0,2,4,5 (16 runs) |
-| ST35 | Nino Ruins | 6 | 54 | 0,1,2,3,5,8,12,16,20 | ERR: a2 (9 runs); WALKFALL: a1,2 (17 runs) |
-| ST36 | Nino Ruins | 14 | 62 | 0,1,2,3,5,12,20 | ERR: a13 (7 runs); WALKFALL: a1,3,6,12,13 (26 runs) |
-| ST37 | Nino Ruins | 16 | 73 | 0,1,2,3,5,12,20 | ERR: a15 (7 runs); WALKFALL: a4,6,11,15 (25 runs) |
+| ST35 | Nino Ruins | 6 | 54 | 0,1,2,3,5,8,12,16,20 | WALKFALL: a1; a2 verified at byte14 0, 5 and 12 |
+| ST36 | Nino Ruins | 14 | 62 | 0,1,2,3,5,12,20 | WALKFALL: a1,3,6,12; a13 verified at byte14 0, 5 and 12 |
+| ST37 | Nino Ruins | 16 | 73 | 0,1,2,3,5,12,20 | WALKFALL: a4,6,11; a15 verified at byte14 0, 5 and 12 |
 | ST38 | Nino Ruins | 13 | 117 | 0,1,2,3,5,8,12,16,20 | WALKFALL: a9 (9 runs) |
 | ST39 | Flutter new-game scene | 2 | 8 | 0,1,2,3 | WALKFALL: a0 (3 runs) |
 | ST3A | Sulphur-Bottom / Forbidden Island scenes | 4 | 16 | 0,1,2,3 | WALKFALL: a0,1,2 (11 runs) |
@@ -102,11 +102,11 @@ Flags: NOLOAD session failed to start; HANG load over 90 s; CRASH process died; 
 | ST3D | Sulphur-Bottom | 4 | 36 | 0,1,2,3,5,8,12,16,20 | OK |
 | ST3E | Sulphur-Bottom | 7 | 63 | 0,1,2,3,5,8,12,16,20 | OK |
 | ST3F | Sulphur-Bottom | 2 | 18 | 0,1,2,3,5,8,12,16,20 | OK |
-| ST40 | Elysium | 14 | 126 | 0,1,2,3,5,8,12,16,20 | ERR: a1 (9 runs) |
+| ST40 | Elysium | 14 | 126 | 0,1,2,3,5,8,12,16,20 | OK (a1 verified at byte14 0, 5, 12 and 20: scene 0x6A runs on the runner) |
 | ST41 | Defense Area | 15 | 60 | 0,1,2,3 | OK |
 | ST42 | Defense Area | 16 | 64 | 0,1,2,3 | OK |
 | ST43 | Mother Zone | 5 | 20 | 0,1,2,3 | OK |
-| ST44 | Mother Zone | 5 | 20 | 0,1,2,3 | OK |
+| ST44 | Mother Zone | 5 | 20 | 0,1,2,3 | OK (runner stage; areas 2 and 3 have pits at the start) |
 | ST45 | Mother Zone | 6 | 24 | 0,1,2,3 | OK |
 | ST46 | Nino Island / Flutter scenes | 3 | 12 | 0,1,2,3 | WALKFALL: a1 (4 runs) |
 | ST47 | Yosyonke City | 3 | 27 | 0,1,2,3,5,8,12,16,20 | OK |

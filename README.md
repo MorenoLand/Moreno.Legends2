@@ -18,50 +18,50 @@ Work in progress. The table is generated from `docs/regression_sweep.md` (headle
 | Debug area | ST00 | 2 | Port scripts only | Yes | - |
 | Sulphur-Bottom opening | ST02 | 2 | Port scripts only | Yes | - |
 | Flutter opening | ST03 | 4 | Port scripts only | Yes | - |
-| Flutter | ST04, ST05, ST06, ST07 | 15 | Port scripts only | Yes | - |
-| Yosyonke City | ST08, ST09, ST0A, ST0B, ST0C, ST47 | 16 | Some stages | Mostly | ST09: scene 0x72 (area 0) not ported |
-| Calinca Tundra | ST0D, ST0E | 5 | Some stages | Yes | - |
+| Flutter | ST04, ST05, ST06, ST07 | 15 | Port scripts only | Yes | Runner support exists (ST04–ST07 are in the runner stage list) but is switched off until it is tested in play; purchases and repairs are not verified |
+| Yosyonke City | ST08, ST09, ST0A, ST0B, ST0C, ST47 | 16 | Some stages | Yes | ST08 and ST0B stay on port scripts (landing, scene 0x27 do not run on the original code) |
+| Calinca Tundra | ST0D, ST0E | 5 | All stages | Yes | - |
 | Abandoned Mine | ST0F | 13 | All stages | Yes | - |
 | Forbidden Island | ST10, ST11, ST1D | 6 | Some stages | Yes | - |
 | Manda Ruins | ST12, ST13, ST14 | 23 | All stages | Yes | - |
 | Nino Island | ST15, ST16, ST18, ST19 | 12 | All stages | Yes | - |
 | King Glydon | ST17 | 3 | All stages | Yes | - |
-| Ruminoa City | ST1A, ST1B | 7 | Port scripts only | Yes | - |
+| Ruminoa City | ST1A, ST1B | 7 | All stages | Yes | - |
 | Forbidden Island / Sulphur-Bottom scenes | ST1C | 6 | All stages | Yes | - |
 | Flutter fire | ST1E | 3 | Port scripts only | Yes | - |
-| Glyde's Base | ST1F, ST30, ST31 | 9 | Port scripts only | Yes | - |
-| Kito Village | ST20 | 2 | Port scripts only | Yes | - |
-| Calbania Plains | ST21, ST22, ST23 | 3 | Port scripts only | Yes | - |
+| Glyde's Base | ST1F, ST30, ST31 | 9 | All stages | Yes | - |
+| Kito Village | ST20 | 2 | All stages | Yes | - |
+| Calbania Plains | ST21, ST22, ST23 | 3 | All stages | Yes | - |
 | Pokte Plains | ST24 | 3 | All stages | Yes | - |
 | Pokte Village | ST25 | 7 | All stages | Yes | - |
-| Saul Kada Ruins | ST26, ST27, ST28, ST33, ST34 | 29 | Some stages | Yes | - |
-| Kimotoma City | ST29, ST2A, ST2B, ST2C, ST3B, ST3C | 19 | Some stages | Mostly | ST3C: scene 0x5D (area 2) not ported |
-| Calinca Ruins | ST2D, ST2E, ST2F | 31 | Some stages | Mostly | ST2D: area 5: player falls out of the world when idle |
-| Pokte Mayor's Home | ST32 | 1 | Port scripts only | Yes | - |
-| Nino Ruins | ST35, ST36, ST37, ST38 | 49 | All stages | Mostly | ST35: area 2 has no clear walkable spawn; ST36: area 13 has no clear walkable spawn; ST37: area 15 has no clear walkable spawn |
+| Saul Kada Ruins | ST26, ST27, ST28, ST33, ST34 | 29 | All stages | Yes | - |
+| Kimotoma City | ST29, ST2A, ST2B, ST2C, ST3B, ST3C | 19 | All stages | Yes | ST3C: after scene 0x5D (area 2, story 12) the flag that advances the story is never set (boss not found) |
+| Calinca Ruins | ST2D, ST2E, ST2F | 31 | All stages | Yes | - |
+| Pokte Mayor's Home | ST32 | 1 | All stages | Yes | - |
+| Nino Ruins | ST35, ST36, ST37, ST38 | 49 | All stages | Yes | - |
 | Flutter new-game scene | ST39 | 2 | All stages | Yes | - |
 | Sulphur-Bottom / Forbidden Island scenes | ST3A | 4 | Port scripts only | Yes | - |
 | Sulphur-Bottom | ST3D, ST3E, ST3F, ST4B | 19 | Some stages | Yes | - |
-| Elysium | ST40 | 14 | All stages | Mostly | ST40: scene 0x6A (area 1) not ported |
+| Elysium | ST40 | 14 | All stages | Yes | - |
 | Defense Area | ST41, ST42 | 31 | All stages | Yes | - |
-| Mother Zone | ST43, ST44, ST45, ST4C, ST58, ST5C | 27 | Some stages | Yes | - |
+| Mother Zone | ST43, ST44, ST45, ST4C, ST58, ST5C | 27 | All stages | Yes | - |
 | Nino Island / Flutter scenes | ST46 | 3 | All stages | Yes | - |
-| Saul Kada Desert | ST48 | 2 | Port scripts only | Yes | - |
+| Saul Kada Desert | ST48 | 2 | All stages | Yes | - |
 | Flutter / Dropship scenes | ST49 | 4 | Port scripts only | Yes | - |
 | Tutorial | ST4A | 7 | All stages | Yes | - |
-| Guild Ruins | ST4D | 9 | Port scripts only | Yes | - |
+| Guild Ruins | ST4D | 9 | All stages | Yes | - |
 | Pokte Caverns | ST4E, ST51 | 13 | All stages | Yes | - |
 | Kito Caverns | ST4F | 15 | All stages | Mostly | ST4F: area 14 is an unreachable stub; no clear spawn |
 | Kimotoma Caverns | ST50 | 11 | All stages | Yes | - |
-| Sera / Master scenes | ST52 | 5 | Port scripts only | Yes | - |
-| Calinca Tundra scenes | ST53 | 3 | Port scripts only | Yes | - |
-| Rocket launch ending | ST54 | 3 | Port scripts only | Yes | - |
+| Sera / Master scenes | ST52 | 5 | All stages | Yes | - |
+| Calinca Tundra scenes | ST53 | 3 | All stages | Yes | - |
+| Rocket launch ending | ST54 | 3 | All stages | Yes | Ending music (XA) not verified in a full run |
 | License Test Ruins | ST55 | 7 | All stages | Yes | - |
-| Master's Room | ST56 | 1 | Port scripts only | Yes | - |
-| Game credits | ST57 | 1 | Port scripts only | Yes | - |
-| Manda Circuit | ST59 | 1 | Port scripts only | Yes | - |
-| Calinca Circuit | ST5A | 1 | Port scripts only | Yes | - |
-| Saul Kada Circuit | ST5B | 1 | Port scripts only | Yes | - |
+| Master's Room | ST56 | 1 | All stages | Yes | - |
+| Game credits | ST57 | 1 | All stages | Yes | Credits music is not played; the page clock is inferred (see docs/progression.md) |
+| Manda Circuit | ST59 | 1 | All stages | Yes | - |
+| Calinca Circuit | ST5A | 1 | All stages | Yes | - |
+| Saul Kada Circuit | ST5B | 1 | All stages | Yes | - |
 
 ### Open bugs
 
