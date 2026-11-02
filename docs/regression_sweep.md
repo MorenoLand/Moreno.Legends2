@@ -23,7 +23,7 @@ Flags: NOLOAD session failed to start; HANG load over 90 s; CRASH process died; 
 ## Open
 
 - ST4F:14 ("Area 14") is a 2 m stub with one quad and no route into it; it cannot be started without a door and is not a playable room.
-- Unsupported native scenes requested by GAME.BIN: none for ST09 any more: ST09 area 0 scene 0x72 is played by the runner from story byte 16 (ST09 now runs the runner at bytes 1-15 too and loads cleanly at the nine sweep bytes; see docs/progression.md, Yosyonke). ST3C area 2 (0x5D) now runs on the runner from byte14 12 (see docs/progression.md, Kimotoma City): the scene plays to its end, but the flag that advances the story (0x6F) is not set afterwards.
+- Unsupported native scenes requested by GAME.BIN: none for ST09 any more: ST09 area 0 scene 0x72 is played by the runner from story byte 16 (ST09 now runs the runner at bytes 1-15 too and loads cleanly at the nine sweep bytes; see docs/progression.md, Yosyonke). ST3C area 2 (0x5D) now runs on the runner from byte14 12 (see docs/progression.md, Kimotoma City): the scene, the boss fight (pack ST3C02.BIN) and scene 0x5E run and the story byte advances 12 -> 13.
 - ST1D area 2 at byte14 20 hit an unresolved MIPS target (0x00000000, ra 0x800E7770) once; a rerun was clean.
 - ST01 (world map) has no areas and is not startable through the area path.
 - The ST08:0 679 ms first-frame spike and the ST37:4 74 ms spike came from three parallel cold-start processes and do not reproduce alone (about 32 ms).

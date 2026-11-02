@@ -35,7 +35,7 @@ Work in progress. The table is generated from `docs/regression_sweep.md` (headle
 | Pokte Plains | ST24 | 3 | All stages | Yes | - |
 | Pokte Village | ST25 | 7 | All stages | Yes | - |
 | Saul Kada Ruins | ST26, ST27, ST28, ST33, ST34 | 29 | All stages | Yes | - |
-| Kimotoma City | ST29, ST2A, ST2B, ST2C, ST3B, ST3C | 19 | All stages | Yes | ST3C: after scene 0x5D (area 2, story 12) the flag that advances the story is never set (boss not found) |
+| Kimotoma City | ST29, ST2A, ST2B, ST2C, ST3B, ST3C | 19 | All stages | Yes | ST3C: area 2 story 12 (scene 0x5D, boss, scene 0x5E) verified headless with the timeline shortened; the full unshortened scene was verified in the runner alone |
 | Calinca Ruins | ST2D, ST2E, ST2F | 31 | All stages | Yes | - |
 | Pokte Mayor's Home | ST32 | 1 | All stages | Yes | - |
 | Nino Ruins | ST35, ST36, ST37, ST38 | 49 | All stages | Yes | - |

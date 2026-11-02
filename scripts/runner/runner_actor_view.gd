@@ -318,9 +318,9 @@ func flush_hits() -> void:
 	if queued_damage == 0 and queued_flags == 0:
 		return
 	var target := address + HIT_WORD
-	# Actors that allocate a separate record (ST3C boss class 0x73, init 0x800EF7D0) keep a pointer in the +0x14C slot; their code reads the hit word at the record's start.
+	# Actors that allocate a separate record (ST3C boss class 0x73, init 0x800EF7D0) keep a pointer to an entry of the joint pool (SLES 0x8003EDEC, +0x20) in the +0x14C slot; their code reads the hit word at the record's start.
 	var inline_record := machine.u32(address + HIT_WORD)
-	if inline_record >= 0x80000000 and inline_record < 0x80200000:
+	if inline_record >= JOINT_POOL + 0x20 and inline_record < JOINT_POOL + 32 * JOINT_STRIDE and (inline_record - JOINT_POOL - 0x20) % JOINT_STRIDE == 0:
 		target = inline_record
 	if machine.u32(address + BOUNDS) == 0 and _part_hit() != 0:
 		target = _part_hit()
